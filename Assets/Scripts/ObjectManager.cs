@@ -6,6 +6,11 @@ public class ObjectManager : MonoBehaviour
     [SerializeField]
     private GameObject playerPrefab;
 
+    private void Awake()
+    {
+        DontDestroyOnLoad(gameObject);
+    }
+
     public GameObject SpawnPlayer(Vector3 spawnPosition)
     {
         GameObject newPlayer = Instantiate(
