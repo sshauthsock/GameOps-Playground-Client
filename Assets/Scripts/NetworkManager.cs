@@ -1,5 +1,6 @@
 using System;
 using System.Net.Sockets;
+using System.Threading;
 using UnityEngine;
 
 public class NetworkManager : MonoBehaviour
@@ -9,6 +10,14 @@ public class NetworkManager : MonoBehaviour
 
     private TcpClient _client;
     private NetworkStream _stream;
+
+    private Thread _receiveThread;
+    private bool _isRunning = true;
+
+    void Start()
+    {
+        Connect();
+    }
 
     private void Awake()
     {
@@ -30,6 +39,11 @@ public class NetworkManager : MonoBehaviour
 
             Debug.Log($"M3 서버에 연결 성공! IP: {serverIP}:{serverPort}");
             SendLoginRequest("NewPlayer");
+
+            _isRunning = true;
+            _receiveThread = new Thread(ReceiveLoop);
+            _receiveThread.IsBackground = true;
+            _receiveThread.Start();
         }
         catch (Exception e)
         {
@@ -38,6 +52,49 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    private void ReceiveLoop()
+    {
+        const int MAX_BUFFER_SIZE = 4096;
+        byte[] receiveBuffer = new byte[MAX_BUFFER_SIZE];
+        int bytesRead = 0;
+
+        while (_isRunning && _client.Connected)
+        {
+            try
+            {
+                if (_stream.DataAvailable)
+                {
+                    bytesRead = _stream.Read(receiveBuffer, 0, receiveBuffer.Length);
+                    if (bytesRead > 0)
+                    {
+                        Debug.Log($"[Recv] 서버로부터 {bytesRead} 바이트 수신.");
+                    }
+                }
+                Thread.Sleep(1);
+            }
+            catch (Exception e)
+            {
+                if (_client.Connected)
+                {
+                    Debug.LogError($"수신 중 오류 발생: {e.Message}");
+
+                }
+                _isRunning = false;
+            }
+        }
+        Debug.Log("수신 루프 종료.");
+    }
+    void OnDestroy()
+    {
+        _isRunning = false;
+        if (_receiveThread != null && _receiveThread.IsAlive)
+        {
+            _receiveThread.Join(); // 스레드가 완전히 종료되기를 기다림
+        }
+        if (_stream != null) _stream.Close();
+        if (_client != null) _client.Close();
+        Debug.Log("네트워크 자원 정리 완료.");
+    }
     public void SendPacket(byte[] packet)
     {
         if (_stream == null || _client == null || !_client.Connected)
