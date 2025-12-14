@@ -1,4 +1,6 @@
 using System;
+using System.Collections;
+using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
 using UnityEngine;
@@ -14,6 +16,15 @@ public class NetworkManager : MonoBehaviour
     private Thread _receiveThread;
     private bool _isRunning = true;
 
+    private Queue<byte[]> _packetQueue = new Queue<byte[]>();
+    private void Update()
+    {
+        while (_packetQueue.Count > 0)
+        {
+            byte[] packetData = _packetQueue.Dequeue();
+            HandlePacket(packetData);
+        }
+    }
     void Start()
     {
         Connect();
@@ -67,6 +78,12 @@ public class NetworkManager : MonoBehaviour
                     bytesRead = _stream.Read(receiveBuffer, 0, receiveBuffer.Length);
                     if (bytesRead > 0)
                     {
+                        byte[] processedData = new byte[bytesRead];
+                        Array.Copy(receiveBuffer, processedData, bytesRead);
+                        lock (_packetQueue)
+                        {
+                            _packetQueue.Enqueue(processedData);
+                        }
                         Debug.Log($"[Recv] 서버로부터 {bytesRead} 바이트 수신.");
                     }
                 }
@@ -141,5 +158,35 @@ public class NetworkManager : MonoBehaviour
 
         return builder.GetPacket();
     }
+
+    private void HandlePacket(byte[] packetData)
+    {
+        PacketReader reader = new PacketReader(packetData);
+        Packet header = reader.ReadHeader();
+
+        Debug.Log($"[Handle] 패킷 ID: {header.MessageID}, 총 길이: {header.TotalLength}");
+        switch (header.MessageID)
+        {
+            case 101:
+                ProcessLoginResponse(reader);
+                break;
+        }
+    }
+
+    private void ProcessLoginResponse(PacketReader reader)
+    {
+        int result = reader.ReadInt32();
+        if (result == 1)
+        {
+            Debug.Log("로그인 성공! Lobby 씬으로 이동합니다.");
+            UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+        }
+        else
+        {
+            Debug.LogError($"로그인 실패! 결과 코드: {result}");
+        }
+    }
+
+
 
 }
