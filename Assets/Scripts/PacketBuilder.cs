@@ -76,4 +76,14 @@ public class PacketBuilder
             _writer.Write(nullPadding);
         }
     }
+
+    public void WriteInt32(int data)
+    {
+        _writer.Write(GetBytes(data));
+    }
+
+    public void WriteUInt16(ushort data)
+    {
+        _writer.Write(GetBytes(data));
+    }
 }

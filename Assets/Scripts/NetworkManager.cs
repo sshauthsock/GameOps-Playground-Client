@@ -60,6 +60,17 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.LogError($"M3 서버 연결 실패: {e.Message}");
             _client = null;
+            Debug.Log("서버 연결 실패. 로그인 성공 패킷(ID 101)을 강제 주입하여 로직을 테스트합니다.");
+
+            byte[] dummyPacket = MakeDummyLoginSuccessPacket();
+
+            lock (_packetQueue)
+            {
+                _packetQueue.Enqueue(dummyPacket);
+
+            }
+            Debug.Log("더미 패킷 주입 완료. Update()에서 처리될 예정입니다.");
+            return;
         }
     }
 
@@ -187,6 +198,25 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    private byte[] MakeDummyLoginSuccessPacket()
+    {
+        const ushort MESSAGE_ID = 101;
+        const int RESULT_SUCCESS = 1; // 성공 코드
 
+        // 전체 길이 = 헤더(4byte) + 바디(4byte)
+        const ushort TOTAL_LENGTH = 4 + 4;
+
+        PacketBuilder builder = new PacketBuilder();
+
+        // 1. 헤더 쓰기 (ID 101, Length 8)
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+
+        // 2. 바디 쓰기 (Result = 1)
+        builder.WriteInt32(RESULT_SUCCESS); // PacketBuilder에 추가된 메서드를 사용!
+
+        Debug.Log("더미 패킷 생성 완료: ID 101 (로그인 성공)");
+
+        return builder.GetPacket();
+    }
 
 }
