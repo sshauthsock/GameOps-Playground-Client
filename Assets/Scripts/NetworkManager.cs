@@ -221,23 +221,44 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    // NetworkManager.cs 내부
     private void ProcessRoomListResponse(PacketReader reader)
     {
         Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
+
+        // 1. 방 목록을 담을 리스트를 선언합니다.
+        List<RoomData> roomList = new List<RoomData>(); // <-- List 선언
+
+        // 2. 방의 개수를 먼저 읽습니다.
         int roomCount = reader.ReadInt32();
 
+        // 3. N개의 방 정보를 반복하여 읽습니다.
         for (int i = 0; i < roomCount; i++)
         {
-
             int roomID = reader.ReadInt32(); // RoomID (4 bytes)
             string roomName = reader.ReadUserName(20); // RoomName (20 bytes)
             int userCount = reader.ReadInt32(); // CurrentUserCount (4 bytes)
+
+            // 4. 읽은 데이터를 RoomData 인스턴스로 만들고 리스트에 추가
+            RoomData room = new RoomData(roomID, roomName, userCount);
+            roomList.Add(room);
 
             Debug.Log($"[Room Info] ID: {roomID}, Name: {roomName}, Users: {userCount}");
         }
 
         Debug.Log($"총 {roomCount}개의 방 목록 처리 완료.");
 
+        // 5. 해석된 데이터를 LobbyManager에게 전달 (최종 목표 달성!)
+        if (LobbyManager.Instance != null)
+        {
+            // LobbyManager의 UpdateRoomList 함수를 호출하여 리스트를 넘겨줍니다.
+            LobbyManager.Instance.UpdateRoomList(roomList);
+        }
+        else
+        {
+            // 로비 씬에 LobbyManager가 없을 경우 (디버깅용)
+            Debug.LogError("LobbyManager.Instance가 씬에 존재하지 않아 방 목록을 UI에 전달할 수 없습니다.");
+        }
     }
     private byte[] MakeDummyLoginSuccessPacket()
     {
