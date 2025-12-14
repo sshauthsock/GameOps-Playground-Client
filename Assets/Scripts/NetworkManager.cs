@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
 using UnityEngine;
-
+using UnityEngine.SceneManagement;
 public class NetworkManager : MonoBehaviour
 {
     public static NetworkManager Instance { get; private set; }
@@ -37,6 +37,7 @@ public class NetworkManager : MonoBehaviour
         {
             Instance = this;
             DontDestroyOnLoad(gameObject);
+            SceneManager.sceneLoaded += OnSceneLoaded;
         }
         else
         {
@@ -82,7 +83,16 @@ public class NetworkManager : MonoBehaviour
             return;
         }
     }
-
+    private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
+    {
+        // 로비 씬의 빌드 인덱스가 1번이라고 가정합니다.
+        if (scene.buildIndex == 1)
+        {
+            Debug.Log($"씬 로드 완료: {scene.name} (Build Index: {scene.buildIndex})");
+            // 로비 씬에 도착하면 방 목록 요청을 보냅니다.
+            SendRoomListRequest();
+        }
+    }
     private void ReceiveLoop()
     {
         const int MAX_BUFFER_SIZE = 4096;
@@ -123,6 +133,7 @@ public class NetworkManager : MonoBehaviour
     }
     void OnDestroy()
     {
+        SceneManager.sceneLoaded -= OnSceneLoaded;
         _isRunning = false;
         if (_receiveThread != null && _receiveThread.IsAlive)
         {
@@ -224,6 +235,25 @@ public class NetworkManager : MonoBehaviour
         builder.WriteInt32(RESULT_SUCCESS); // PacketBuilder에 추가된 메서드를 사용!
 
         Debug.Log("더미 패킷 생성 완료: ID 101 (로그인 성공)");
+
+        return builder.GetPacket();
+    }
+
+    private void SendRoomListRequest()
+    {
+        byte[] roomListPacket = MakeRoomListRequestPacket();
+        SendPacket(roomListPacket);
+        Debug.Log("ID 290 (RoomList Req) 패킷이 M3 서버로 전송되었습니다.");
+    }
+
+    private byte[] MakeRoomListRequestPacket()
+    {
+        const ushort MESSAGE_ID = 290;
+        const ushort TOTAL_LENGTH = 4;
+        PacketBuilder builder = new PacketBuilder();
+
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        Debug.Log($"방 목록 요청 패킷 (ID 290) 생성 완료. 총 길이: {TOTAL_LENGTH} 바이트.");
 
         return builder.GetPacket();
     }
