@@ -7,6 +7,7 @@ using UnityEngine;
 
 public class NetworkManager : MonoBehaviour
 {
+    public static NetworkManager Instance { get; private set; }
     [SerializeField] private string serverIP = "127.0.0.1";
     [SerializeField] private int serverPort = 7777;
 
@@ -32,8 +33,16 @@ public class NetworkManager : MonoBehaviour
 
     private void Awake()
     {
-        // Maestro Tip: 씬 전환 시 파괴되지 않고 영원히 생존하도록 설정
-        DontDestroyOnLoad(gameObject);
+        if (Instance == null)
+        {
+            Instance = this;
+            DontDestroyOnLoad(gameObject);
+        }
+        else
+        {
+            Destroy(gameObject);
+        }
+
     }
 
     private void Connect()
