@@ -201,6 +201,9 @@ public class NetworkManager : MonoBehaviour
             case 101:
                 ProcessLoginResponse(reader);
                 break;
+            case 291:
+                ProcessRoomListResponse(reader);
+                break;
         }
     }
 
@@ -218,6 +221,24 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    private void ProcessRoomListResponse(PacketReader reader)
+    {
+        Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
+        int roomCount = reader.ReadInt32();
+
+        for (int i = 0; i < roomCount; i++)
+        {
+
+            int roomID = reader.ReadInt32(); // RoomID (4 bytes)
+            string roomName = reader.ReadUserName(20); // RoomName (20 bytes)
+            int userCount = reader.ReadInt32(); // CurrentUserCount (4 bytes)
+
+            Debug.Log($"[Room Info] ID: {roomID}, Name: {roomName}, Users: {userCount}");
+        }
+
+        Debug.Log($"총 {roomCount}개의 방 목록 처리 완료.");
+
+    }
     private byte[] MakeDummyLoginSuccessPacket()
     {
         const ushort MESSAGE_ID = 101;
