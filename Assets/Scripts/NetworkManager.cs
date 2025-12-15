@@ -197,6 +197,9 @@ public class NetworkManager : MonoBehaviour
             case 301:
                 ProcessJoinRoomResponse(reader);
                 break;
+            case 401:
+                ProcessGameStartResponse(reader);
+                break;
         }
     }
 
@@ -372,9 +375,45 @@ public class NetworkManager : MonoBehaviour
             Debug.LogError($"방 입장 실패! RoomID: {roomID}, 결과 코드: {result}");
         }
     }
+    public byte[] MakeDummyGameStartPacket()
+    {
+        const ushort MESSAGE_ID = 401;
+        const int RESULT_SUCCESS = 1;
+        const ushort TOTAL_LENGTH = 4 + 4; // Header + Result
 
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(RESULT_SUCCESS);
+
+        Debug.Log($"더미 패킷 생성 완료: ID 401 (게임 시작 성공).");
+        return builder.GetPacket();
+    }
     public bool IsConnected()
     {
         return _client != null && _client.Connected;
+    }
+
+    private void ProcessGameStartResponse(PacketReader reader)
+    {
+        int result = reader.ReadInt32();
+
+        if (result == 1)
+        {
+            Debug.Log("게임 시작 응답 (ID 401) 성공. GameManager의 StartGameLogic 호출.");
+
+            // 💡 GameManager의 StartGameLogic() 호출
+            if (GameManager.Instance != null)
+            {
+                GameManager.Instance.StartGameLogic();
+            }
+            else
+            {
+                Debug.LogError("GameManager.Instance가 할당되지 않았습니다. GameScene 설정을 확인하십시오.");
+            }
+        }
+        else
+        {
+            Debug.LogError($"게임 시작 실패! 결과 코드: {result}");
+        }
     }
 }
