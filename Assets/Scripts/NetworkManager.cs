@@ -194,6 +194,9 @@ public class NetworkManager : MonoBehaviour
             case 291:
                 ProcessRoomListResponse(reader);
                 break;
+            case 301:
+                ProcessJoinRoomResponse(reader);
+                break;
         }
     }
 
@@ -317,5 +320,61 @@ public class NetworkManager : MonoBehaviour
         builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
         Debug.Log($"방 목록 요청 패킷 (ID 290) 생성 완료. 총 길이: {TOTAL_LENGTH} 바이트.");
         return builder.GetPacket();
+    }
+
+    public byte[] MakeJoinRoomPacket(int roomID)
+    {
+        const ushort MESSAGE_ID = 300;
+        const ushort TOTAL_LENGTH = 4 + 4; // Header(4) + RoomID(4)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(roomID);
+
+        Debug.Log($"방 입장 요청 패킷 (ID 300) 생성 완료. 방 ID: {roomID}");
+        return builder.GetPacket();
+    }
+
+    public void SendJoinRoomRequest(int roomID)
+    {
+        byte[] joinPacket = MakeJoinRoomPacket(roomID);
+        SendPacket(joinPacket);
+        Debug.Log($"ID 300 (Join Room Req) 패킷이 M3 서버로 전송되었습니다. RoomID: {roomID}");
+    }
+    public byte[] MakeDummyJoinRoomSuccessPacket(int roomID)
+    {
+        const ushort MESSAGE_ID = 301;
+        const int RESULT_SUCCESS = 1;
+        const ushort TOTAL_LENGTH = 4 + 4 + 4; // Header + Result + RoomID
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(RESULT_SUCCESS);
+        builder.WriteInt32(roomID);
+
+        Debug.Log($"더미 패킷 생성 완료: ID 301 (방 입장 성공). RoomID: {roomID}");
+        return builder.GetPacket();
+    }
+
+    private void ProcessJoinRoomResponse(PacketReader reader)
+    {
+        int result = reader.ReadInt32();
+        int roomID = reader.ReadInt32();
+
+        if (result == 1)
+        {
+            Debug.Log($"방 입장 성공! RoomID: {roomID}. Game 씬으로 이동합니다.");
+
+            UnityEngine.SceneManagement.SceneManager.LoadScene(2);
+        }
+        else
+        {
+            Debug.LogError($"방 입장 실패! RoomID: {roomID}, 결과 코드: {result}");
+        }
+    }
+
+    public bool IsConnected()
+    {
+        return _client != null && _client.Connected;
     }
 }

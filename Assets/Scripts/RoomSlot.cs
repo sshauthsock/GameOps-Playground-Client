@@ -40,5 +40,24 @@ public class RoomSlot : MonoBehaviour
     {
         Debug.Log($"방 입장 요청: ID {_data.RoomID}, 이름: {_data.RoomName}");
 
+        // 1. NetworkManager를 통해 서버에 방 입장 요청 패킷(ID 300) 전송
+        NetworkManager.Instance.SendJoinRoomRequest(_data.RoomID);
+
+        // 더미 패킷 주입 조건을 강제 실행으로 변경합니다.
+        // (서버가 없으므로 무조건 더미 응답을 주입해야 합니다.)
+        if (true) // 테스트를 위해 항상 실행되도록 강제 변경
+        {
+            byte[] dummyJoinAns = NetworkManager.Instance.MakeDummyJoinRoomSuccessPacket(_data.RoomID);
+
+            lock (NetworkManager.Instance._packetQueue)
+            {
+                NetworkManager.Instance._packetQueue.Enqueue(dummyJoinAns);
+            }
+            Debug.Log($"ID 301 (Join Room Ans, RoomID: {_data.RoomID}) 더미 패킷 주입 완료.");
+
+            // 패킷 처리 강제 실행 (즉시 응답 확인)
+            NetworkManager.Instance.ForceProcessPackets();
+        }
+        // 실제 서버 환경이라면 if (!NetworkManager.Instance.IsConnected()) 조건문을 유지해야 합니다.
     }
 }
