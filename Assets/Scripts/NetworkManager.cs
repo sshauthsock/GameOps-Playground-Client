@@ -13,6 +13,7 @@ public class NetworkManager : MonoBehaviour
     [SerializeField] private string serverIP = "127.0.0.1";
     [SerializeField] private int serverPort = 7777;
 
+    public bool IS_DUMMY_MODE = true; // 실제 서버 연결 시 false 로 바꾸면 된다.
     private TcpClient _client;
     private NetworkStream _stream;
 
@@ -68,34 +69,41 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
-    private void Connect()
+    public void Connect()
     {
+        //  1. 서버 연결 시도
+        // (여기서는 실제 서버 IP와 Port를 사용해야 합니다.)
+        string ip = "127.0.0.1";
+        int port = 8888;
+
         try
         {
-            _client = new TcpClient(serverIP, serverPort);
+            _client = new TcpClient(ip, port);
             _stream = _client.GetStream();
-
-            _isRunning = true;
-            _receiveThread = new Thread(ReceiveLoop);
-            _receiveThread.IsBackground = true;
-            _receiveThread.Start();
-            Debug.Log($"M3 서버에 연결 성공! IP: {serverIP}:{serverPort}");
-            SendLoginRequest("NewPlayer");
+            Debug.Log($"M3 서버 연결 성공: {ip}:{port}");
         }
-        catch (Exception e)
+        catch (SocketException ex)
         {
-            Debug.LogError($"M3 서버 연결 실패: {e.Message}");
-            _client = null;
+            // 연결 실패 시 로그 출력
+            Debug.LogError($"M3 서버 연결 실패: {ex.Message}");
+        }
+
+        //  2. 더미 모드일 경우 로그인 성공 패킷을 강제 주입하여 로직 테스트
+        //     (서버 연결 상태와 무관하게 로직 테스트를 진행하기 위함)
+        if (IS_DUMMY_MODE)
+        {
             Debug.Log("서버 연결 실패. 로그인 성공 패킷(ID 101)을 강제 주입하여 로직을 테스트합니다.");
 
-            byte[] dummyPacket = MakeDummyLoginSuccessPacket();
-
-            lock (_packetQueue)
-            {
-                _packetQueue.Enqueue(dummyPacket);
-            }
-            Debug.Log("더미 패킷 주입 완료. Update()에서 처리될 예정입니다.");
-            return;
+            // 새로 만든 위임 함수를 호출하여 더미 패킷 생성/주입/처리를 NetworkManager 내부에서 모두 처리
+            ForceProcessLoginDummy();
+        }
+        else
+        {
+            // 실제 서버 연결 성공 시, 서버에 실제 로그인 요청 패킷(ID 100)을 전송하는 로직이 여기에 들어갑니다.
+            // if (_client != null && _client.Connected) 
+            // {
+            //     SendLoginRequest(); 
+            // }
         }
     }
 
@@ -344,7 +352,7 @@ public class NetworkManager : MonoBehaviour
         SendPacket(joinPacket);
         Debug.Log($"ID 300 (Join Room Req) 패킷이 M3 서버로 전송되었습니다. RoomID: {roomID}");
     }
-    public byte[] MakeDummyJoinRoomSuccessPacket(int roomID)
+    private byte[] MakeDummyJoinRoomSuccessPacket(int roomID)
     {
         const ushort MESSAGE_ID = 301;
         const int RESULT_SUCCESS = 1;
@@ -375,7 +383,7 @@ public class NetworkManager : MonoBehaviour
             Debug.LogError($"방 입장 실패! RoomID: {roomID}, 결과 코드: {result}");
         }
     }
-    public byte[] MakeDummyGameStartPacket()
+    private byte[] MakeDummyGameStartPacket()
     {
         const ushort MESSAGE_ID = 401;
         const int RESULT_SUCCESS = 1;
@@ -401,7 +409,7 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.Log("게임 시작 응답 (ID 401) 성공. GameManager의 StartGameLogic 호출.");
 
-            // 💡 GameManager의 StartGameLogic() 호출
+            //  GameManager의 StartGameLogic() 호출
             if (GameManager.Instance != null)
             {
                 GameManager.Instance.StartGameLogic();
@@ -416,4 +424,51 @@ public class NetworkManager : MonoBehaviour
             Debug.LogError($"게임 시작 실패! 결과 코드: {result}");
         }
     }
+
+    //  로그인 더미 응답 처리를 강제하는 함수
+    internal void ForceProcessLoginDummy()
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        byte[] dummyLoginAns = MakeDummyLoginSuccessPacket(); // private 함수 호출
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyLoginAns);
+        }
+        Debug.Log("ID 101 (로그인 성공) 더미 패킷 주입 완료. (Force)");
+
+        ForceProcessPackets();
+    }
+    //  인게임 더미 응답 처리를 강제하는 함수
+    internal void ForceProcessGameStartDummy()
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        byte[] dummyStartAns = MakeDummyGameStartPacket(); // private 함수 호출
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyStartAns);
+        }
+        Debug.Log("ID 401 (Game Start Ans) 더미 패킷 주입 완료. (Force)");
+
+        ForceProcessPackets();
+    }
+
+    internal void ForceProcessJoinRoomDummy(int roomID)
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        byte[] dummyJoinAns = MakeDummyJoinRoomSuccessPacket(roomID); // private 함수 호출
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyJoinAns);
+        }
+        Debug.Log($"ID 301 (Join Room Ans, RoomID: {roomID}) 더미 패킷 주입 완료. (Force)");
+
+        ForceProcessPackets();
+    }
+
 }

@@ -40,24 +40,37 @@ public class RoomSlot : MonoBehaviour
     {
         Debug.Log($"방 입장 요청: ID {_data.RoomID}, 이름: {_data.RoomName}");
 
-        // 1. NetworkManager를 통해 서버에 방 입장 요청 패킷(ID 300) 전송
+        // 1. 서버에 방 입장 요청 (ID 300) 전송 시도
         NetworkManager.Instance.SendJoinRoomRequest(_data.RoomID);
 
-        // 더미 패킷 주입 조건을 강제 실행으로 변경합니다.
-        // (서버가 없으므로 무조건 더미 응답을 주입해야 합니다.)
-        if (true) // 테스트를 위해 항상 실행되도록 강제 변경
+        //  더미 모드일 경우, NetworkManager에게 ID 301 응답을 처리하도록 요청
+        if (NetworkManager.Instance.IS_DUMMY_MODE)
         {
-            byte[] dummyJoinAns = NetworkManager.Instance.MakeDummyJoinRoomSuccessPacket(_data.RoomID);
+            //  이 함수가 NetworkManager에 추가되지 않았다면 오류가 발생합니다.
+            //    (우리가 ForceProcessGameStartDummy()처럼 추가했어야 합니다.)
+            //    일단은 ID 301 처리를 위한 임시 위임 함수를 가정하겠습니다.
 
-            lock (NetworkManager.Instance._packetQueue)
+            // --- 1단계 임시 조치: ID 301 처리 위임 함수가 필요합니다 ---
+
+            //  하지만 더미 주입 책임은 NetworkManager에 있어야 하므로, 
+            //    NetworkManager에 이 함수를 추가해야 합니다.
+
+            // 아래 코드를 NetworkManager.cs에 추가해야 합니다.
+            /*
+            // NetworkManager.cs (내부 함수)
+            internal void ForceProcessJoinRoomDummy(int roomID) 
             {
-                NetworkManager.Instance._packetQueue.Enqueue(dummyJoinAns);
+                if (!IS_DUMMY_MODE) return;
+                byte[] dummyAns = MakeDummyJoinRoomSuccessPacket(roomID);
+                lock (_packetQueue) { _packetQueue.Enqueue(dummyAns); }
+                Debug.Log($"ID 301 더미 주입 완료 (RoomID: {roomID})");
+                ForceProcessPackets();
             }
-            Debug.Log($"ID 301 (Join Room Ans, RoomID: {_data.RoomID}) 더미 패킷 주입 완료.");
+            */
 
-            // 패킷 처리 강제 실행 (즉시 응답 확인)
-            NetworkManager.Instance.ForceProcessPackets();
+            // --- 2단계: RoomSlot에서 위임 함수 호출 ---
+            NetworkManager.Instance.ForceProcessJoinRoomDummy(_data.RoomID);
+
         }
-        // 실제 서버 환경이라면 if (!NetworkManager.Instance.IsConnected()) 조건문을 유지해야 합니다.
     }
 }

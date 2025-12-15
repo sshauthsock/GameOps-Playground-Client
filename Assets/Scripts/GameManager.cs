@@ -29,22 +29,13 @@ public class GameManager : MonoBehaviour
     {
         Debug.Log("[GameManager] 서버에 게임 준비 요청 (ID 400) 전송 시도.");
 
-        // 1. NetworkManager를 통해 게임 준비 요청 패킷 전송
-        // NetworkManager.Instance.SendGameReadyRequest(); // ID 400 전송 예정
+        // 1. NetworkManager.Instance.SendGameReadyRequest(); // 실제 ID 400 전송 (미구현)
 
         // 2. 더미 테스트 환경이므로, 응답 패킷(ID 401)을 강제 주입하여 시작 로직 테스트
-        if (!NetworkManager.Instance.IsConnected())
+        if (NetworkManager.Instance.IS_DUMMY_MODE)
         {
-            byte[] dummyStartAns = NetworkManager.Instance.MakeDummyGameStartPacket();
-
-            lock (NetworkManager.Instance._packetQueue)
-            {
-                NetworkManager.Instance._packetQueue.Enqueue(dummyStartAns);
-            }
-            Debug.Log("ID 401 (Game Start Ans) 더미 패킷 주입 완료.");
-
-            // 패킷 처리 강제 실행
-            NetworkManager.Instance.ForceProcessPackets();
+            //  모든 더미 로직을 NetworkManager에게 위임
+            NetworkManager.Instance.ForceProcessGameStartDummy();
         }
     }
 
