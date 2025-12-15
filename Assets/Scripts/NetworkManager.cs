@@ -266,15 +266,15 @@ public class NetworkManager : MonoBehaviour
         builder.WriteInt32(ROOM_COUNT);
 
         builder.WriteInt32(1001);
-        builder.WriteUserName("첫 번째 방", 20);
+        builder.WriteUserName("Room One", 20);
         builder.WriteInt32(1);
 
         builder.WriteInt32(1002);
-        builder.WriteUserName("테스트 방", 20);
+        builder.WriteUserName("Test Room", 20);
         builder.WriteInt32(3);
 
         builder.WriteInt32(1003);
-        builder.WriteUserName("가득 찬 방", 20);
+        builder.WriteUserName("Full Room", 20);
         builder.WriteInt32(5);
 
         Debug.Log($"더미 패킷 생성 완료: ID 291 (방 목록 응답, 방 {ROOM_COUNT}개)");
