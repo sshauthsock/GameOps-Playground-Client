@@ -13,7 +13,7 @@ public class NetworkManager : MonoBehaviour
     [SerializeField] private string serverIP = "127.0.0.1";
     [SerializeField] private int serverPort = 7777;
 
-    public bool IS_DUMMY_MODE = true; // 실제 서버 연결 시 false 로 바꾸면 된다.
+    public bool IS_DUMMY_MODE = true; // 실제 서버 연결 시 false, 테스트 시 true
     private TcpClient _client;
     private NetworkStream _stream;
 
@@ -55,55 +55,61 @@ public class NetworkManager : MonoBehaviour
 
     private void OnSceneLoaded(Scene scene, LoadSceneMode mode)
     {
-        if (scene.buildIndex == 1)
+        if (scene.buildIndex == 1) // LobbyScene
         {
             Debug.Log($"씬 로드 완료: {scene.name} (Build Index: {scene.buildIndex})");
 
-            SendRoomListRequest();
-            byte[] dummyRoomListAns = MakeDummyRoomListResponsePacket();
-            _packetQueue.Enqueue(dummyRoomListAns);
-            Debug.Log("ID 291 (RoomList Ans) 더미 패킷 주입 완료.");
+            SendRoomListRequest(); // ID 290 요청은 실제 서버로 전송 시도
 
-            ForceProcessPackets();
-            Debug.Log("[NetworkManager] ID 291 주입 및 LobbyManager에게 즉시 처리 요청 완료.");
+            if (IS_DUMMY_MODE)
+            {
+                //  DUMMY MODE일 때만 ID 291 응답을 강제 주입
+                byte[] dummyRoomListAns = MakeDummyRoomListResponsePacket();
+                _packetQueue.Enqueue(dummyRoomListAns);
+                Debug.Log("ID 291 (RoomList Ans) 더미 패킷 주입 완료.");
+
+                ForceProcessPackets();
+                Debug.Log("[NetworkManager] ID 291 주입 및 LobbyManager에게 즉시 처리 요청 완료.");
+            }
         }
     }
 
     public void Connect()
     {
-        //  1. 서버 연결 시도
-        // (여기서는 실제 서버 IP와 Port를 사용해야 합니다.)
-        string ip = "127.0.0.1";
-        int port = 8888;
+        string ip = serverIP;
+        int port = serverPort;
 
-        try
-        {
-            _client = new TcpClient(ip, port);
-            _stream = _client.GetStream();
-            Debug.Log($"M3 서버 연결 성공: {ip}:{port}");
-        }
-        catch (SocketException ex)
-        {
-            // 연결 실패 시 로그 출력
-            Debug.LogError($"M3 서버 연결 실패: {ex.Message}");
-        }
-
-        //  2. 더미 모드일 경우 로그인 성공 패킷을 강제 주입하여 로직 테스트
-        //     (서버 연결 상태와 무관하게 로직 테스트를 진행하기 위함)
         if (IS_DUMMY_MODE)
         {
-            Debug.Log("서버 연결 실패. 로그인 성공 패킷(ID 101)을 강제 주입하여 로직을 테스트합니다.");
+            //  CASE 1: DUMMY MODE (연결 실패 가정 및 더미 로직 강제 실행)
+            Debug.Log("DUMMY MODE 활성화. 서버 연결을 시도하지 않고 더미 로그인 로직을 강제 실행합니다.");
 
-            // 새로 만든 위임 함수를 호출하여 더미 패킷 생성/주입/처리를 NetworkManager 내부에서 모두 처리
+            // 1. DUMMY는 연결이 성공했다고 가정하고, 수신 스레드는 시작하지 않습니다.
+            // 2. 로그인 응답(ID 101) 더미 패킷을 강제 주입하여 TitleScene을 통과시킵니다.
             ForceProcessLoginDummy();
         }
         else
         {
-            // 실제 서버 연결 성공 시, 서버에 실제 로그인 요청 패킷(ID 100)을 전송하는 로직이 여기에 들어갑니다.
-            // if (_client != null && _client.Connected) 
-            // {
-            //     SendLoginRequest(); 
-            // }
+            //  CASE 2: REAL SERVER MODE (실제 서버 연결 및 요청)
+            try
+            {
+                _client = new TcpClient(ip, port);
+                _stream = _client.GetStream();
+                Debug.Log($"M3 서버 연결 성공: {ip}:{port}");
+
+                // 1. 수신 스레드 시작: 서버 응답(ID 101)을 받기 위해 필요합니다.
+                _receiveThread = new Thread(ReceiveLoop);
+                _receiveThread.Start();
+
+                // 2. 로그인 요청(ID 100) 전송
+                string tempUserName = "UnityClient_01";
+                SendLoginRequest(tempUserName);
+            }
+            catch (SocketException ex)
+            {
+                // 연결 실패 시 TitleScene에 머무르거나, 재접속 UI를 띄우는 것이 정상입니다.
+                Debug.LogError($"M3 서버 연결 실패: {ex.Message}");
+            }
         }
     }
 
@@ -295,11 +301,20 @@ public class NetworkManager : MonoBehaviour
         return builder.GetPacket();
     }
 
-    private void SendLoginRequest(string userName)
+    public void SendLoginRequest(string userName)
     {
-        byte[] loginPacket = MakeLoginPacket(userName);
+        const ushort MESSAGE_ID = 100;
+        // 패킷 길이 계산: Header(4) + String 길이(4) + String 데이터(가변)
+        int stringLength = System.Text.Encoding.UTF8.GetByteCount(userName);
+        ushort TOTAL_LENGTH = (ushort)(4 + 4 + stringLength);
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteString(userName); //  이 userName이 패킷에 담겨야 합니다.
+
+        byte[] loginPacket = builder.GetPacket();
         SendPacket(loginPacket);
-        Debug.Log("ID 100 (Login Req) 패킷이 M3 서버로 전송되었습니다.");
+        Debug.Log($"ID 100 (로그인 요청) 패킷 전송 완료. User: {userName}");
     }
 
     public byte[] MakeLoginPacket(string userName)
@@ -469,6 +484,25 @@ public class NetworkManager : MonoBehaviour
         Debug.Log($"ID 301 (Join Room Ans, RoomID: {roomID}) 더미 패킷 주입 완료. (Force)");
 
         ForceProcessPackets();
+    }
+
+    public byte[] MakeGameReadyRequestPacket()
+    {
+        const ushort MESSAGE_ID = 400;
+        const ushort TOTAL_LENGTH = 4; // Header(4)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+
+        Debug.Log("게임 준비 요청 패킷 (ID 400) 생성 완료.");
+        return builder.GetPacket();
+    }
+
+    public void SendGameReadyRequest()
+    {
+        byte[] readyPacket = MakeGameReadyRequestPacket();
+        SendPacket(readyPacket);
+        Debug.Log("ID 400 (Game Ready Req) 패킷이 M3 서버로 전송되었습니다.");
     }
 
 }

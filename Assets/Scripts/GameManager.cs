@@ -37,6 +37,10 @@ public class GameManager : MonoBehaviour
             //  모든 더미 로직을 NetworkManager에게 위임
             NetworkManager.Instance.ForceProcessGameStartDummy();
         }
+        else
+        {
+            NetworkManager.Instance.SendGameReadyRequest();
+        }
     }
 
     // NetworkManager가 호출할 게임 시작 함수
