@@ -21,7 +21,7 @@ public class NetworkManager : MonoBehaviour
     private bool _isRunning = true;
 
     internal Queue<byte[]> _packetQueue = new Queue<byte[]>();
-
+    public string ConnectedUserName { get; private set; }
     private void Update()
     {
         // 빈 상태 유지
@@ -223,6 +223,7 @@ public class NetworkManager : MonoBehaviour
         if (result == 1)
         {
             Debug.Log("로그인 성공! Lobby 씬으로 이동합니다.");
+            ConnectedUserName = "UnityClient_01";
             UnityEngine.SceneManagement.SceneManager.LoadScene(1);
         }
         else
