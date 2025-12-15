@@ -41,13 +41,16 @@ public class PlayerManager : MonoBehaviour
         GameObject playerObj = Instantiate(playerPrefab, position, Quaternion.identity);
         playerObj.name = $"Player_{playerID}_{userName}";
 
+        PlayerController controller = playerObj.GetComponent<PlayerController>();
+
         // 딕셔너리에 추가
         _players.Add(playerID, playerObj);
         Debug.Log($"[PlayerManager] Player {userName} (ID: {playerID}) 생성 완료.");
 
-        // 💡 만약 이 플레이어가 '나'라면 별도의 로직 실행 (예: 카메라 추적)
-        if (playerID == MyPlayerID)
+        // 만약 이 플레이어가 '나'라면 별도의 로직 실행 (예: 카메라 추적)
+        if (playerID == MyPlayerID && controller != null)
         {
+            controller.isLocalPlayer = true;
             Debug.Log("이것은 내 플레이어입니다. (로컬 플레이어)");
             // TODO: 카메라 추적 로직 추가
         }
