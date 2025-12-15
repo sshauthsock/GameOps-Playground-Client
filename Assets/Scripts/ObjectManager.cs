@@ -2,7 +2,6 @@ using UnityEngine;
 
 public class ObjectManager : MonoBehaviour
 {
-
     public static ObjectManager Instance { get; private set; }
 
     [SerializeField]
