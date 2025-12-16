@@ -2,10 +2,12 @@ using System.IO;
 using System;
 using UnityEngine;
 using System.Text;
+using System.Linq;
 
 public class PacketReader
 {
     private readonly byte[] _buffer;
+    private int _offset = 0;
     private int _position;
 
     public PacketReader(byte[] buffer)
@@ -41,7 +43,21 @@ public class PacketReader
     {
         return BitConverter.ToInt32(GetBytes(4), 0);
     }
+    public float ReadFloat()
+    {
+        // 1. 버퍼에서 4바이트를 읽습니다.
+        byte[] floatBytes = _buffer.Skip(_offset).Take(4).ToArray();
+        _offset += 4;
 
+        // 2. 시스템의 엔디언과 다르면 바이트 순서를 뒤집습니다.
+        if (BitConverter.IsLittleEndian == false)
+        {
+            Array.Reverse(floatBytes);
+        }
+
+        // 3. 바이트 배열을 float 값으로 변환합니다.
+        return BitConverter.ToSingle(floatBytes, 0);
+    }
     public bool ReadBoolean()
     {
         return BitConverter.ToBoolean(GetBytes(1), 0);

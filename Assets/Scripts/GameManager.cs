@@ -5,7 +5,9 @@ using UnityEngine.SceneManagement;
 public class GameManager : MonoBehaviour
 {
     public static GameManager Instance { get; private set; }
-
+    private float _lastDummyMoveTime = 0f;
+    private const float DUMMY_MOVE_INTERVAL = 1.0f; // 1초마다 이동 시도
+    private Vector3 _dummyTargetPos = new Vector3(5, 0, 0); // RemotePlayer_A의 시작 위치
     private void Awake()
     {
         // GameManager 싱글톤 설정
@@ -19,7 +21,26 @@ public class GameManager : MonoBehaviour
             Destroy(gameObject);
         }
     }
+    void Update()
+    {
+        if (!NetworkManager.Instance.IS_DUMMY_MODE)
+            return;
 
+        // 더미 움직임 테스트 (1초마다 RemotePlayer_A를 목표 위치로 강제 이동)
+        if (Time.time > _lastDummyMoveTime + DUMMY_MOVE_INTERVAL)
+        {
+            // 목표 위치 변경 (좌우로 왔다갔다)
+            _dummyTargetPos.x = (_dummyTargetPos.x > 0) ? -5f : 5f;
+
+            // NetworkManager를 통해 ID 501 패킷을 강제 주입
+            NetworkManager.Instance.ForceProcessMoveDummy(
+                playerID: 1000,
+                position: _dummyTargetPos,
+                rotation: Quaternion.identity // 회전은 일단 무시
+            );
+            _lastDummyMoveTime = Time.time;
+        }
+    }
     void Start()
     {
         StartCoroutine(DelayedGameStart());

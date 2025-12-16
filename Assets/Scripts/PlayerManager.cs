@@ -84,4 +84,27 @@ public class PlayerManager : MonoBehaviour
         _players.Clear();
         Debug.Log("[PlayerManager] 모든 플레이어 객체 제거 완료.");
     }
+    public void UpdatePlayerPosition(int playerID, Vector3 position, Quaternion rotation)
+    {
+        //  1. 딕셔너리에서 해당 플레이어 객체를 찾습니다.
+        if (_players.TryGetValue(playerID, out GameObject playerObj))
+        {
+            //  2. 로컬 플레이어는 서버 위치로 강제 업데이트하지 않습니다.
+            //    (우리가 조작하므로, 서버 패킷에 의해 움직임이 튕기는 것을 방지)
+            PlayerController controller = playerObj.GetComponent<PlayerController>();
+            if (controller != null && controller.isLocalPlayer)
+            {
+                // Debug.Log($"로컬 플레이어의 위치는 서버 패킷으로 업데이트하지 않습니다. ID: {playerID}");
+                return;
+            }
+
+            //  3. 찾은 플레이어의 위치와 회전을 직접 업데이트합니다.
+            playerObj.transform.position = position;
+            playerObj.transform.rotation = rotation;
+        }
+        else
+        {
+            Debug.LogWarning($"[PlayerManager] 업데이트할 Player ID {playerID}를 찾을 수 없습니다. (아직 생성되지 않음)");
+        }
+    }
 }
