@@ -505,5 +505,35 @@ public class NetworkManager : MonoBehaviour
         SendPacket(readyPacket);
         Debug.Log("ID 400 (Game Ready Req) 패킷이 M3 서버로 전송되었습니다.");
     }
+    public byte[] MakeMoveRequestPacket(Vector3 position, Quaternion rotation)
+    {
+        const ushort MESSAGE_ID = 500;
+        // 패킷 길이 계산: Header(4) + Position(4*3) + Rotation(4*4) = 4 + 12 + 16 = 32 바이트
+        const ushort TOTAL_LENGTH = 32;
 
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+
+        // 💡 1. 위치(Position) 정보 3개 (Float 4바이트 * 3)
+        builder.WriteFloat(position.x);
+        builder.WriteFloat(position.y);
+        builder.WriteFloat(position.z);
+
+        // 💡 2. 회전(Rotation) 정보 4개 (Float 4바이트 * 4) - Quaternion은 4개의 Float로 구성 (x, y, z, w)
+        builder.WriteFloat(rotation.x);
+        builder.WriteFloat(rotation.y);
+        builder.WriteFloat(rotation.z);
+        builder.WriteFloat(rotation.w);
+
+        Debug.Log($"이동 요청 패킷 (ID 500) 생성 완료. 길이: {TOTAL_LENGTH} 바이트. Pos: {position}");
+        return builder.GetPacket();
+    }
+
+    public void SendMoveRequest(Vector3 position, Quaternion rotation)
+    {
+        byte[] movePacket = MakeMoveRequestPacket(position, rotation);
+        SendPacket(movePacket);
+        // 주석 처리: 이동 요청은 초당 여러 번 발생하므로, 로그를 너무 자주 출력하면 성능에 영향
+        // Debug.Log($"ID 500 (Move Req) 패킷이 M3 서버로 전송되었습니다. Pos: {position}");
+    }
 }

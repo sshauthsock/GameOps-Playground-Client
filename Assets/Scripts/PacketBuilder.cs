@@ -75,6 +75,21 @@ public class PacketBuilder
             _writer.Write(nullPadding);
         }
     }
+    public void WriteFloat(float value)
+    {
+        // 1. float 값을 4바이트 배열로 변환합니다.
+        byte[] floatBytes = BitConverter.GetBytes(value);
+
+        // 2. 시스템이 리틀 엔디언이 아니면 바이트 순서를 뒤집습니다.
+        //    (대부분의 시스템은 리틀 엔디언이므로 불필요할 수 있으나, 안전을 위해 처리합니다.)
+        if (BitConverter.IsLittleEndian == false)
+        {
+            Array.Reverse(floatBytes);
+        }
+
+        // 3. 버퍼에 추가합니다.
+        _buffer.AddRange(floatBytes);
+    }
 
     public void WriteInt32(int data)
     {

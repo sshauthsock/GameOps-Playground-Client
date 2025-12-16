@@ -2,6 +2,8 @@ using UnityEngine;
 
 public class PlayerController : MonoBehaviour
 {
+    private float _lastSendTime = 0f;
+    private const float SEND_INTERVAL = 0.05f; // 초당 20회 (1초 / 0.05초) 전송
     // 캐릭터의 이동 속도
     public float moveSpeed = 5.0f;
 
@@ -35,14 +37,21 @@ public class PlayerController : MonoBehaviour
         // 2. 이동 벡터 계산
         // 3D 환경이므로 Y축은 0으로 고정하고 XZ 평면에서 이동합니다.
         Vector3 moveDirection = new Vector3(horizontal, 0f, vertical).normalized;
+        bool isMoving = moveDirection.magnitude >= 0.1f;
 
-        // 3. Rigidbody를 사용하여 물리 이동 (FixedUpdate에서 처리하는 것이 더 좋지만, 여기서는 Update 사용)
-        if (moveDirection.magnitude >= 0.1f)
+        if (isMoving)
         {
-            // 원하는 위치 계산 (현재 위치 + 이동 방향 * 속도 * 시간)
+            // 2. Rigidbody 이동 처리 (기존 로직 유지)
             Vector3 targetPosition = _rb.position + moveDirection * moveSpeed * Time.deltaTime;
             _rb.MovePosition(targetPosition);
+        }
+        //  3. 서버로 위치 정보 전송 로직 (주기적으로 전송)
+        if (Time.time > _lastSendTime + SEND_INTERVAL)
+        {
+            //  움직이지 않더라도 현재 위치를 전송하여 서버와 동기화를 유지합니다.
+            NetworkManager.Instance.SendMoveRequest(_rb.position, transform.rotation);
 
+            _lastSendTime = Time.time;
         }
     }
 }
