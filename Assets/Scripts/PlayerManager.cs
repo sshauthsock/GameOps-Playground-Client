@@ -5,14 +5,14 @@ public class PlayerManager : MonoBehaviour
 {
     public static PlayerManager Instance { get; private set; }
 
-    // 💡 게임 내 모든 플레이어 객체들을 관리할 딕셔너리
+    //  게임 내 모든 플레이어 객체들을 관리할 딕셔너리
     // Key: 플레이어 ID, Value: 플레이어 객체(GameObject)
     private Dictionary<int, GameObject> _players = new Dictionary<int, GameObject>();
 
-    // 💡 캐릭터 프리팹 (Unity Editor에서 할당 예정)
+    // 캐릭터 프리팹 (Unity Editor에서 할당 예정)
     public GameObject playerPrefab;
 
-    // 💡 내 플레이어 ID (서버로부터 받아올 ID)
+    //  내 플레이어 ID (서버로부터 받아올 ID)
     public int MyPlayerID { get; private set; } = 9999; // 임시 ID 할당
 
     private void Awake()
@@ -52,7 +52,6 @@ public class PlayerManager : MonoBehaviour
         {
             controller.isLocalPlayer = true;
             Debug.Log("이것은 내 플레이어입니다. (로컬 플레이어)");
-            // TODO: 카메라 추적 로직 추가
         }
     }
 
@@ -86,25 +85,26 @@ public class PlayerManager : MonoBehaviour
     }
     public void UpdatePlayerPosition(int playerID, Vector3 position, Quaternion rotation)
     {
-        //  1. 딕셔너리에서 해당 플레이어 객체를 찾습니다.
+        // 로그를 찍어서 패킷이 여기까지 도달하는지 확인하세요.
+        Debug.Log($"[PlayerManager] 업데이트 시도 - ID: {playerID}");
+
         if (_players.TryGetValue(playerID, out GameObject playerObj))
         {
-            //  2. 로컬 플레이어는 서버 위치로 강제 업데이트하지 않습니다.
-            //    (우리가 조작하므로, 서버 패킷에 의해 움직임이 튕기는 것을 방지)
+            //  크기가 변하는 것을 방지하기 위해 스케일을 (1,1,1)로 고정
+            playerObj.transform.localScale = Vector3.one;
             PlayerController controller = playerObj.GetComponent<PlayerController>();
-            if (controller != null && controller.isLocalPlayer)
+            if (controller != null)
             {
-                // Debug.Log($"로컬 플레이어의 위치는 서버 패킷으로 업데이트하지 않습니다. ID: {playerID}");
-                return;
-            }
+                if (controller.isLocalPlayer) return;
 
-            //  3. 찾은 플레이어의 위치와 회전을 직접 업데이트합니다.
-            playerObj.transform.position = position;
-            playerObj.transform.rotation = rotation;
+                //  여기서 SetNetworkPosition이 호출되는지 확인
+                controller.SetNetworkPosition(position, rotation);
+            }
         }
         else
         {
-            Debug.LogWarning($"[PlayerManager] 업데이트할 Player ID {playerID}를 찾을 수 없습니다. (아직 생성되지 않음)");
+            // 만약 이 로그가 뜬다면 딕셔너리에 해당 ID가 없는 것입니다.
+            Debug.LogWarning($"[PlayerManager] ID {playerID}를 딕셔너리에서 찾을 수 없음!");
         }
     }
 }

@@ -511,24 +511,22 @@ public class NetworkManager : MonoBehaviour
     public byte[] MakeMoveRequestPacket(Vector3 position, Quaternion rotation)
     {
         const ushort MESSAGE_ID = 500;
-        // 패킷 길이 계산: Header(4) + Position(4*3) + Rotation(4*4) = 4 + 12 + 16 = 32 바이트
-        const ushort TOTAL_LENGTH = 32;
+        // Header(4) + ID(4) + Pos(12) + Rot(16) = 총 36바이트
+        const ushort TOTAL_LENGTH = 36;
 
         PacketBuilder builder = new PacketBuilder();
         builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(PlayerManager.Instance.MyPlayerID); // ID 포함
 
-        // 💡 1. 위치(Position) 정보 3개 (Float 4바이트 * 3)
         builder.WriteFloat(position.x);
         builder.WriteFloat(position.y);
         builder.WriteFloat(position.z);
 
-        // 💡 2. 회전(Rotation) 정보 4개 (Float 4바이트 * 4) - Quaternion은 4개의 Float로 구성 (x, y, z, w)
         builder.WriteFloat(rotation.x);
         builder.WriteFloat(rotation.y);
         builder.WriteFloat(rotation.z);
         builder.WriteFloat(rotation.w);
 
-        Debug.Log($"이동 요청 패킷 (ID 500) 생성 완료. 길이: {TOTAL_LENGTH} 바이트. Pos: {position}");
         return builder.GetPacket();
     }
 
@@ -537,57 +535,51 @@ public class NetworkManager : MonoBehaviour
         byte[] movePacket = MakeMoveRequestPacket(position, rotation);
         SendPacket(movePacket);
         // 주석 처리: 이동 요청은 초당 여러 번 발생하므로, 로그를 너무 자주 출력하면 성능에 영향
-        // Debug.Log($"ID 500 (Move Req) 패킷이 M3 서버로 전송되었습니다. Pos: {position}");
+        Debug.Log($"ID 500 (Move Req) 패킷이 M3 서버로 전송되었습니다. Pos: {position}");
     }
     private void ProcessPlayerMoveResponse(PacketReader reader)
     {
-        // 패킷 구조: PlayerID(4) + Position(4*3) + Rotation(4*4) = 32 바이트 (예상)
-
         int playerID = reader.ReadInt32();
-        //  위치 정보 (Vector3)
-        float posX = reader.ReadFloat();
-        float posY = reader.ReadFloat();
-        float posZ = reader.ReadFloat();
-        Vector3 position = new Vector3(posX, posY, posZ);
 
-        //  회전 정보 (Quaternion)
-        float rotX = reader.ReadFloat();
-        float rotY = reader.ReadFloat();
-        float rotZ = reader.ReadFloat();
-        float rotW = reader.ReadFloat();
-        Quaternion rotation = new Quaternion(rotX, rotY, rotZ, rotW);
+        // 위치 3개
+        Vector3 position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
 
-        Debug.Log($"[ID 501 수신] Player ID {playerID} 위치 업데이트: {position}");
+        // 회전 4개
+        float rx = reader.ReadFloat();
+        float ry = reader.ReadFloat();
+        float rz = reader.ReadFloat();
+        float rw = reader.ReadFloat();
+        Quaternion rotation = new Quaternion(rx, ry, rz, rw);
 
-        //  핵심: PlayerManager를 통해 해당 플레이어의 위치를 업데이트합니다.
+        //  로그를 찍어 r.w 값이 0이 아닌지 확인해보세요. 보통 정상적인 값은 0~1 사이입니다.
+        Debug.Log($"[수신] ID: {playerID}, Pos: {position}, RotW: {rw}");
+
         PlayerManager.Instance.UpdatePlayerPosition(playerID, position, rotation);
     }
-
     public void ForceProcessMoveDummy(int playerID, Vector3 position, Quaternion rotation)
     {
         const ushort MESSAGE_ID = 501;
-        const ushort TOTAL_LENGTH = 32;
+        const ushort TOTAL_LENGTH = 36; //  반드시 36이어야 합니다.
 
         PacketBuilder builder = new PacketBuilder();
         builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
-        builder.WriteInt32(playerID);
+        builder.WriteInt32(playerID); // (4)
 
-        // 위치 정보
-        builder.WriteFloat(position.x);
-        builder.WriteFloat(position.y);
-        builder.WriteFloat(position.z);
+        builder.WriteFloat(position.x); // (4)
+        builder.WriteFloat(position.y); // (4)
+        builder.WriteFloat(position.z); // (4)
 
-        // 회전 정보 (간소화를 위해 Quaternion 대신 0을 채웁니다.)
-        builder.WriteFloat(rotation.x);
-        builder.WriteFloat(rotation.y);
-        builder.WriteFloat(rotation.z);
-        builder.WriteFloat(rotation.w);
+        //  회전값 4개를 정확히 다 쓰는지 확인
+        builder.WriteFloat(rotation.x); // (4)
+        builder.WriteFloat(rotation.y); // (4)
+        builder.WriteFloat(rotation.z); // (4)
+        builder.WriteFloat(rotation.w); // (4) 👈 특히 이 w값이 누락되면 큐브가 뒤틀립니다.
 
         byte[] movePacket = builder.GetPacket();
-
-        Debug.Log($"[더미] ID 501 (Move Resp) 패킷을 강제 주입합니다. ID: {playerID}");
-        //  수신 큐에 추가 후 강제 처리
-        _packetQueue.Enqueue(movePacket);
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(movePacket);
+        }
         ForceProcessPackets();
     }
 }

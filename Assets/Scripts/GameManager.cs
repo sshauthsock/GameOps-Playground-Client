@@ -4,9 +4,10 @@ using UnityEngine.SceneManagement;
 
 public class GameManager : MonoBehaviour
 {
+    private bool _isGameStarted = false;
     public static GameManager Instance { get; private set; }
     private float _lastDummyMoveTime = 0f;
-    private const float DUMMY_MOVE_INTERVAL = 1.0f; // 1초마다 이동 시도
+    private const float DUMMY_MOVE_INTERVAL = 0.1f; // 0.1초마다 이동 시도
     private Vector3 _dummyTargetPos = new Vector3(5, 0, 0); // RemotePlayer_A의 시작 위치
     private void Awake()
     {
@@ -23,23 +24,23 @@ public class GameManager : MonoBehaviour
     }
     void Update()
     {
-        if (!NetworkManager.Instance.IS_DUMMY_MODE)
-            return;
+        // if (!NetworkManager.Instance.IS_DUMMY_MODE || !_isGameStarted)
+        //     return;
 
-        // 더미 움직임 테스트 (1초마다 RemotePlayer_A를 목표 위치로 강제 이동)
-        if (Time.time > _lastDummyMoveTime + DUMMY_MOVE_INTERVAL)
-        {
-            // 목표 위치 변경 (좌우로 왔다갔다)
-            _dummyTargetPos.x = (_dummyTargetPos.x > 0) ? -5f : 5f;
+        // if (Time.time > _lastDummyMoveTime + DUMMY_MOVE_INTERVAL)
+        // {
+        //     //  Z축을 2f로 설정하여 중앙(Z=0)에 있는 내 캐릭터와 충돌을 방지합니다.
+        //     float xPos = Mathf.Sin(Time.time) * 5f;
+        //     _dummyTargetPos = new Vector3(xPos, 0, 2f);
 
-            // NetworkManager를 통해 ID 501 패킷을 강제 주입
-            NetworkManager.Instance.ForceProcessMoveDummy(
-                playerID: 1000,
-                position: _dummyTargetPos,
-                rotation: Quaternion.identity // 회전은 일단 무시
-            );
-            _lastDummyMoveTime = Time.time;
-        }
+        //     //  회전값은 identity(0,0,0,1)로 고정해서 보냅니다.
+        //     NetworkManager.Instance.ForceProcessMoveDummy(
+        //         playerID: 1000,
+        //         position: _dummyTargetPos,
+        //         rotation: Quaternion.identity
+        //     );
+        //     _lastDummyMoveTime = Time.time;
+        // }
     }
     void Start()
     {
@@ -47,7 +48,7 @@ public class GameManager : MonoBehaviour
     }
     private IEnumerator DelayedGameStart()
     {
-        // 💡 한 프레임을 기다려 모든 컴포넌트의 Awake/Start 완료를 보장
+        //  한 프레임을 기다려 모든 컴포넌트의 Awake/Start 완료를 보장
         yield return null;
 
         // 이 시점에서는 PlayerManager.Instance가 Null이 아닐 확률이 높습니다.
@@ -81,30 +82,26 @@ public class GameManager : MonoBehaviour
     // NetworkManager가 호출할 게임 시작 함수
     public void StartGameLogic()
     {
-        Debug.Log("======================================");
-        Debug.Log(" 🎉 Game Start Logic 실행 🎉 ");
-        Debug.Log("======================================");
-
-        //  1. 인게임 진입 시 기존 플레이어 객체 모두 제거 (씬 전환 시 호출될 수 있으므로 안전장치)
         PlayerManager.Instance.ClearAllPlayers();
 
-        //  2. '나'의 캐릭터 생성 (임시 데이터)
-        int myID = PlayerManager.Instance.MyPlayerID;
-        string myName = NetworkManager.Instance.ConnectedUserName;
-        //  3. 서버로부터 초기 플레이어 목록을 받았다고 가정하고 생성
-
-        // 내 캐릭터 생성
+        // 내 캐릭터 생성 (0, 0, 0)
         PlayerManager.Instance.AddPlayer(
-            playerID: myID,
-            userName: myName,
-            position: new Vector3(0, 0, 0)
+            playerID: PlayerManager.Instance.MyPlayerID,
+            userName: NetworkManager.Instance.ConnectedUserName,
+            position: Vector3.zero
         );
 
-        // 다른 플레이어 (더미) 생성
+        //  원격 플레이어 생성 위치를 (5, 0, 0)으로 명확히 고정
+        // 더미 타겟 위치도 이와 일치시켜야 첫 프레임 텔레포트를 막습니다.
+        _dummyTargetPos = new Vector3(5, 0, 0);
+
         PlayerManager.Instance.AddPlayer(
             playerID: 1000,
             userName: "RemotePlayer_A",
-            position: new Vector3(5, 0, 0)
+            position: _dummyTargetPos
         );
+
+        _isGameStarted = true;
+        Debug.Log("🎉 Game Start Logic 완료 - 이제부터 동기화 시작");
     }
 }
