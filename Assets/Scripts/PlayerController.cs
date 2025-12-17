@@ -1,14 +1,15 @@
 using UnityEngine;
 using TMPro;
 using System.Collections;
+using UnityEngine.UI;
 
 public class PlayerController : MonoBehaviour
 {
-
     [Header("Combat Settings")]
     public float maxHealth = 100f;
     public float currentHealth;
     public bool isDead = false;
+    public Slider hpBarSlider;
 
     [Header("Fire Settings")]
     public TextMeshProUGUI nameTagText;
@@ -76,13 +77,26 @@ public class PlayerController : MonoBehaviour
         }
 
         currentHealth = maxHealth;
+
+        if (hpBarSlider != null)
+        {
+            hpBarSlider.maxValue = maxHealth;
+            hpBarSlider.value = currentHealth;
+        }
     }
     public void TakeDamage(float amount)
     {
         if (isDead) return;
 
         currentHealth -= amount;
-        Debug.Log($"[ID {this.name}] 데미지 발생! 남은 체력: {currentHealth}");
+
+        // HP Bar UI 업데이트
+        if (hpBarSlider != null)
+        {
+            hpBarSlider.value = currentHealth;
+        }
+
+        Debug.Log($"[ID {this.name}] 남은 체력: {currentHealth}");
 
         if (currentHealth <= 0)
         {
@@ -93,11 +107,11 @@ public class PlayerController : MonoBehaviour
     private void Die()
     {
         isDead = true;
-        Debug.Log($"[ID {this.name}] 사망하였습니다.");
-        // 일단 화면에서 보이지 않게 처리
-        gameObject.SetActive(false);
+        // 사망 시 HP Bar도 0으로 확정
+        if (hpBarSlider != null) hpBarSlider.value = 0;
 
-        // TODO: 서버에 사망 패킷 전송 및 리스폰 로직 연결
+        gameObject.SetActive(false);
+        Debug.Log($"[ID {this.name}] 사망 처리 완료");
     }
     private void ApplyTankColors()
     {
