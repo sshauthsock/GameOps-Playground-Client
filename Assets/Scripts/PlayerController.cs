@@ -60,12 +60,10 @@ public class PlayerController : MonoBehaviour
         }
     }
 
-    /// <summary>
-    /// WASD 입력을 받아 실제로 캐릭터를 움직이는 로직
-    /// </summary>
     private void HandleLocalMovement()
     {
-        float horizontal = Input.GetAxisRaw("Horizontal"); // GetAxis 대신 GetAxisRaw를 사용하면 더 즉각적입니다.
+        // GetAxis 대신 GetAxisRaw를 사용해야 입력 즉시 -1, 0, 1로 값이 떨어집니다.
+        float horizontal = Input.GetAxisRaw("Horizontal");
         float vertical = Input.GetAxisRaw("Vertical");
 
         Vector3 moveDirection = new Vector3(horizontal, 0f, vertical).normalized;
@@ -76,25 +74,57 @@ public class PlayerController : MonoBehaviour
             Vector3 nextPosition = _rb.position + moveDirection * moveSpeed * Time.deltaTime;
             _rb.MovePosition(nextPosition);
 
-            // 2. 회전 즉시 고정 로직
-            if (horizontal < 0) // A 버튼 (왼쪽)
+            // 2. 회전 즉시 고정 (A/D 버튼 우선 순위)
+            if (horizontal < 0) // A 버튼
             {
                 transform.rotation = Quaternion.Euler(0, -90f, 0);
             }
-            else if (horizontal > 0) // D 버튼 (오른쪽)
+            else if (horizontal > 0) // D 버튼
             {
                 transform.rotation = Quaternion.Euler(0, 90f, 0);
             }
-            else if (vertical > 0) // W 버튼 (위)
+            else if (vertical > 0) // W 버튼
             {
                 transform.rotation = Quaternion.Euler(0, 0f, 0);
             }
-            else if (vertical < 0) // S 버튼 (아래)
+            else if (vertical < 0) // S 버튼
             {
                 transform.rotation = Quaternion.Euler(0, 180f, 0);
             }
         }
     }
+    // private void HandleLocalMovement()
+    // {
+    //     float horizontal = Input.GetAxisRaw("Horizontal"); // GetAxis 대신 GetAxisRaw를 사용하면 더 즉각적입니다.
+    //     float vertical = Input.GetAxisRaw("Vertical");
+
+    //     Vector3 moveDirection = new Vector3(horizontal, 0f, vertical).normalized;
+
+    //     if (moveDirection.magnitude >= 0.1f)
+    //     {
+    //         // 1. 위치 이동
+    //         Vector3 nextPosition = _rb.position + moveDirection * moveSpeed * Time.deltaTime;
+    //         _rb.MovePosition(nextPosition);
+
+    //         // 2. 회전 즉시 고정 로직
+    //         if (horizontal < 0) // A 버튼 (왼쪽)
+    //         {
+    //             transform.rotation = Quaternion.Euler(0, -90f, 0);
+    //         }
+    //         else if (horizontal > 0) // D 버튼 (오른쪽)
+    //         {
+    //             transform.rotation = Quaternion.Euler(0, 90f, 0);
+    //         }
+    //         else if (vertical > 0) // W 버튼 (위)
+    //         {
+    //             transform.rotation = Quaternion.Euler(0, 0f, 0);
+    //         }
+    //         else if (vertical < 0) // S 버튼 (아래)
+    //         {
+    //             transform.rotation = Quaternion.Euler(0, 180f, 0);
+    //         }
+    //     }
+    // }
 
     private void InterpolatePosition()
     {
