@@ -594,4 +594,33 @@ public class NetworkManager : MonoBehaviour
         }
         ForceProcessPackets();
     }
+    public void SendDamageReport(int targetID, float damage)
+    {
+        const ushort MESSAGE_ID = 700;
+        const ushort TOTAL_LENGTH = 12; // Header(4) + TargetID(4) + Damage(4)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(targetID);
+        builder.WriteFloat(damage);
+
+        SendPacket(builder.GetPacket());
+        Debug.Log($"[Send] ID {targetID}에게 {damage} 데미지 보고 전송.");
+    }
+    private void ProcessDamageResponse(PacketReader reader)
+    {
+        int targetID = reader.ReadInt32();
+        float damage = reader.ReadFloat();
+
+        // PlayerManager를 통해 해당 ID의 탱크를 찾아 데미지 적용
+        GameObject playerObj = PlayerManager.Instance.GetPlayerById(targetID);
+        if (playerObj != null)
+        {
+            PlayerController pc = playerObj.GetComponent<PlayerController>();
+            if (pc != null)
+            {
+                pc.TakeDamage(damage); // 실제 체력 및 UI 차감 
+            }
+        }
+    }
 }
