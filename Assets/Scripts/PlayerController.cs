@@ -4,7 +4,11 @@ using System.Collections;
 
 public class PlayerController : MonoBehaviour
 {
+    [Header("Fire Settings")]
     public TextMeshProUGUI nameTagText;
+    public GameObject shellPrefab; // Shell 프리팹 연결
+    public Transform firePoint;    // Barrel 끝에 만든 FirePoint 연결
+    public float launchForce = 15f;
 
     [Header("Movement Settings")]
     public float moveSpeed = 5.0f;
@@ -72,7 +76,7 @@ public class PlayerController : MonoBehaviour
     {
         // 자식뿐만 아니라 모든 하위 렌더러를 가져옵니다.
         Renderer[] rens = GetComponentsInChildren<Renderer>(true);
-        
+
         Debug.Log($"[ApplyTankColors] 찾은 Renderer 개수: {rens.Length}, isLocalPlayer: {isLocalPlayer}");
 
         // 자기 자신의 Renderer 찾기 (메인 몸통)
@@ -81,17 +85,17 @@ public class PlayerController : MonoBehaviour
         foreach (Renderer r in rens)
         {
             if (r == null) continue;
-            
+
             string objName = r.gameObject.name;
             string n = objName.ToLower().Trim();
-            
+
             // Canvas나 UI 관련 Renderer는 제외
             if (n.Contains("canvas") || n.Contains("text") || objName.Contains("(TMP)"))
             {
                 Debug.Log($"[ApplyTankColors] UI Renderer 제외: {objName}");
                 continue;
             }
-            
+
             // [핵심] r.material을 호출하는 순간, 이 객체만을 위한 '복제본 머티리얼'이 생성됩니다.
             // 이를 통해 내 탱크(파랑)와 남의 탱크(빨강)가 같은 머티리얼을 써도 독립된 색을 가집니다.
             Material instancedMat = r.material;
@@ -100,15 +104,15 @@ public class PlayerController : MonoBehaviour
                 Debug.LogWarning($"[ApplyTankColors] Material이 null입니다: {objName}");
                 continue;
             }
-            
+
             Color targetColor = Color.white;
             bool shouldApply = false;
 
             // 메인 몸통 판정: 자기 자신의 Renderer이거나 이름에 특정 키워드가 포함된 경우
-            bool isMainBody = (r == mainBodyRenderer) || 
-                             n.Contains("playercharacter") || 
+            bool isMainBody = (r == mainBodyRenderer) ||
+                             n.Contains("playercharacter") ||
                              (n.Contains("cube") && !n.Contains("turret") && !n.Contains("barrel"));
-            
+
             if (isMainBody)
             {
                 targetColor = isLocalPlayer ? Color.blue : Color.red;
@@ -161,9 +165,12 @@ public class PlayerController : MonoBehaviour
         _targetRotation = rot;
     }
 
-    void Update()
+    private void Update()
     {
-
+        if (isLocalPlayer && Input.GetKeyDown(KeyCode.Space))
+        {
+            CmdFire(); // 내 화면에서 발사 및 서버 알림
+        }
     }
 
     void FixedUpdate()
@@ -182,7 +189,36 @@ public class PlayerController : MonoBehaviour
             InterpolatePosition();
         }
     }
+    private void CmdFire()
+    {
+        Fire(); // 내 화면에서 즉시 발사
+                // 서버 발사 패킷 전송 (ID 600)
+                // NetworkManager.Instance.SendFireRequest(firePoint.position, firePoint.rotation);
+    }
 
+    public void Fire()
+    {
+        if (shellPrefab == null || firePoint == null) return;
+
+        // 포탄을 firePoint에서 약간 앞으로 이동시켜 생성 (즉시 충돌 방지)
+        Vector3 spawnPosition = firePoint.position + firePoint.forward * 0.5f;
+        GameObject shell = Instantiate(shellPrefab, spawnPosition, firePoint.rotation);
+
+        // [중요] 생성된 포탄이 나(탱크)와 부딪히지 않게 설정 (Layer 설정이 안 되어 있을 때 유용)
+        Collider tankCollider = GetComponent<Collider>();
+        Collider shellCollider = shell.GetComponent<Collider>();
+        if (tankCollider != null && shellCollider != null)
+        {
+            Physics.IgnoreCollision(tankCollider, shellCollider);
+        }
+
+        Rigidbody rb = shell.GetComponent<Rigidbody>();
+        if (rb != null)
+        {
+            // velocity를 직접 설정하여 즉시 앞으로 이동하도록 함
+            rb.linearVelocity = firePoint.forward * launchForce;
+        }
+    }
     private void HandleLocalMovement()
     {
         // GetAxis 대신 GetAxisRaw를 사용해야 입력 즉시 -1, 0, 1로 값이 떨어집니다.
@@ -313,19 +349,19 @@ public class PlayerController : MonoBehaviour
         {
             // 폰트가 없거나 아틀라스가 없으면 강제로 폰트 할당
             TMP_FontAsset targetFont = nameTagText.font;
-            
+
             // 폰트가 null이거나 아틀라스가 없으면 기본 폰트 사용
             if (targetFont == null || targetFont.atlasTexture == null)
             {
                 // Resources에서 직접 로드 시도
                 targetFont = Resources.Load<TMP_FontAsset>("Fonts & Materials/LiberationSans SDF");
-                
+
                 // Resources에서 못 찾으면 TMP_Settings에서 가져오기
                 if (targetFont == null)
                 {
                     targetFont = TMP_Settings.defaultFontAsset;
                 }
-                
+
                 // 그래도 없으면 모든 TMP_FontAsset을 찾아서 첫 번째 것 사용
                 if (targetFont == null)
                 {
@@ -336,7 +372,7 @@ public class PlayerController : MonoBehaviour
                         Debug.Log($"[SetPlayerID] Resources에서 폰트 찾음: {targetFont.name}");
                     }
                 }
-                
+
                 if (targetFont != null)
                 {
                     nameTagText.font = targetFont;
@@ -347,7 +383,7 @@ public class PlayerController : MonoBehaviour
                     Debug.LogError($"[SetPlayerID] 폰트를 찾을 수 없습니다! Player ID: {id}");
                 }
             }
-            
+
             // 폰트가 할당되었는지 확인
             if (nameTagText.font == null)
             {
@@ -365,22 +401,22 @@ public class PlayerController : MonoBehaviour
                     StartCoroutine(ReassignFont(nameTagText, font, id));
                 }
             }
-            
+
             // 텍스트와 색상 설정
             nameTagText.text = $"Player {id}";
             nameTagText.color = isLocal ? Color.cyan : Color.red;
-            
+
             // TextMeshPro 컴포넌트를 완전히 재초기화
             // 1. 컴포넌트 비활성화/활성화
             nameTagText.enabled = false;
-            
+
             // 2. Canvas도 재초기화
             Canvas canvas = nameTagText.GetComponentInParent<Canvas>();
             if (canvas != null)
             {
                 canvas.enabled = false;
             }
-            
+
             // 3. GameObject 자체를 잠시 비활성화했다가 활성화
             GameObject textObj = nameTagText.gameObject;
             bool wasActive = textObj.activeSelf;
@@ -388,10 +424,10 @@ public class PlayerController : MonoBehaviour
             {
                 textObj.SetActive(false);
             }
-            
+
             // 한 프레임 대기 후 재활성화
             StartCoroutine(ReinitializeTextMeshPro(nameTagText, canvas, textObj, wasActive, id));
-            
+
             Debug.Log($"[SetPlayerID] TextMeshPro 설정 완료: Player {id}, 폰트: {(nameTagText.font != null ? nameTagText.font.name : "null")}, 텍스트: {nameTagText.text}, 아틀라스: {(nameTagText.font != null && nameTagText.font.atlasTexture != null ? "있음" : "없음")}, GameObject: {nameTagText.gameObject.name}");
         }
         else
@@ -406,7 +442,7 @@ public class PlayerController : MonoBehaviour
     private IEnumerator DelayedTextUpdate(TextMeshProUGUI text, int id)
     {
         yield return null; // 한 프레임 대기
-        
+
         if (text != null)
         {
             text.ForceMeshUpdate();
@@ -418,7 +454,7 @@ public class PlayerController : MonoBehaviour
     private IEnumerator ReassignFont(TextMeshProUGUI text, TMP_FontAsset font, int id)
     {
         yield return null; // 한 프레임 대기
-        
+
         if (text != null && font != null)
         {
             text.font = font;
@@ -430,24 +466,24 @@ public class PlayerController : MonoBehaviour
     private IEnumerator ReinitializeTextMeshPro(TextMeshProUGUI text, Canvas canvas, GameObject textObj, bool wasActive, int id)
     {
         yield return null; // 한 프레임 대기
-        
+
         if (text == null || textObj == null) yield break;
-        
+
         // GameObject 재활성화
         if (wasActive)
         {
             textObj.SetActive(true);
         }
-        
+
         // Canvas 재활성화
         if (canvas != null)
         {
             canvas.enabled = true;
         }
-        
+
         // TextMeshPro 재활성화
         text.enabled = true;
-        
+
         // 폰트가 여전히 할당되어 있는지 확인
         if (text.font == null)
         {
@@ -458,7 +494,7 @@ public class PlayerController : MonoBehaviour
                 Debug.Log($"[ReinitializeTextMeshPro] Player {id} 폰트 재할당: {defaultFont.name}");
             }
         }
-        
+
         // 폰트가 할당되어 있지만 아틀라스가 없는 경우 강제로 재할당
         if (text.font != null && text.font.atlasTexture == null)
         {
@@ -468,16 +504,16 @@ public class PlayerController : MonoBehaviour
             yield return null;
             text.font = font;
         }
-        
+
         // 강제로 업데이트
         text.ForceMeshUpdate();
         text.UpdateVertexData();
-        
+
         // 한 프레임 더 대기 후 다시 업데이트
         yield return null;
         text.ForceMeshUpdate();
         text.UpdateVertexData();
-        
+
         // 최종 상태 확인
         bool hasFont = text.font != null;
         bool hasAtlas = text.font != null && text.font.atlasTexture != null;
@@ -485,9 +521,9 @@ public class PlayerController : MonoBehaviour
         bool isEnabled = text.enabled;
         bool objActive = textObj.activeSelf;
         bool canvasEnabled = canvas != null && canvas.enabled;
-        
+
         Debug.Log($"[ReinitializeTextMeshPro] Player {id} TextMeshPro 재초기화 완료 - 폰트: {(hasFont ? text.font.name : "null")}, 아틀라스: {(hasAtlas ? "있음" : "없음")}, 텍스트: {text.text}, 활성화: {isEnabled}, GameObject 활성: {objActive}, Canvas 활성: {canvasEnabled}");
-        
+
         // 여전히 문제가 있으면 경고
         if (!hasFont || !hasAtlas)
         {
