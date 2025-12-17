@@ -9,6 +9,7 @@ public class PlayerController : MonoBehaviour
     [Header("Status")]
     public bool isLocalPlayer = false;
 
+    private Vector3 _lastSentPosition;
     // 네트워크 동기화를 위한 목표 지점
     private Vector3 _targetPosition;
     private Quaternion _targetRotation;
@@ -25,15 +26,52 @@ public class PlayerController : MonoBehaviour
 
         // 초기 위치 설정
         _targetPosition = transform.position;
+
+        if (isLocalPlayer)
+        {
+            // 내 탱크: 오른쪽(90도)을 바라보며 시작
+            transform.rotation = Quaternion.Euler(0, 90f, 0);
+        }
+        else
+        {
+            // 적 탱크: 내 쪽인 왼쪽(-90도 또는 270도)을 바라보며 시작
+            transform.rotation = Quaternion.Euler(0, -90f, 0);
+        }
+
         _targetRotation = transform.rotation;
 
         // 리지드바디 설정 확인 (Is Kinematic이 켜져 있어야 보간이 깔끔합니다)
         if (_rb != null)
         {
-            _rb.isKinematic = true;
+            _rb.isKinematic = !isLocalPlayer;
+        }
+
+        ApplyTankColors();
+
+    }
+    private void ApplyTankColors()
+    {
+        // 자식들의 모든 Renderer를 가져옵니다.
+        Renderer[] rens = GetComponentsInChildren<Renderer>();
+
+        foreach (Renderer r in rens)
+        {
+            // 오브젝트 이름에 따라 색상을 다르게 배정합니다.
+            // (프리팹에서 설정한 이름과 일치해야 합니다)
+            if (r.gameObject.name == "Body")
+            {
+                r.material.color = isLocalPlayer ? Color.blue : Color.red; // 몸통: 팀 색상
+            }
+            else if (r.gameObject.name == "Turret_Base")
+            {
+                r.material.color = Color.gray; // 포탑: 회색
+            }
+            else if (r.gameObject.name == "Barrel")
+            {
+                r.material.color = Color.black; // 포신: 검은색
+            }
         }
     }
-
     /// <summary>
     /// 외부(PlayerManager)에서 서버 패킷을 받아 목표 위치를 갱신할 때 사용
     /// </summary>
@@ -44,6 +82,11 @@ public class PlayerController : MonoBehaviour
     }
 
     void Update()
+    {
+
+    }
+
+    void FixedUpdate()
     {
         if (isLocalPlayer)
         {
@@ -132,7 +175,9 @@ public class PlayerController : MonoBehaviour
         transform.position = Vector3.Lerp(transform.position, _targetPosition, Time.deltaTime * lerpSpeed);
 
         // 2.  Y축 회전이 변하지 않도록 원천 차단 (0,0,0으로 고정)
-        transform.rotation = Quaternion.identity;
+        // transform.rotation = Quaternion.identity;
+
+        transform.rotation = Quaternion.Slerp(transform.rotation, _targetRotation, Time.deltaTime * lerpSpeed);
 
         // 3.  크기가 늘어나는 현상을 방지하기 위해 스케일을 (1,1,1)로 고정합니다.
         transform.localScale = Vector3.one;
@@ -144,7 +189,9 @@ public class PlayerController : MonoBehaviour
         {
             if (NetworkManager.Instance != null)
             {
-                NetworkManager.Instance.SendMoveRequest(_rb.position, transform.rotation);
+                // NetworkManager.Instance.SendMoveRequest(_rb.position, transform.rotation);
+                NetworkManager.Instance.SendMoveRequest(transform.position, transform.rotation);
+
             }
             _lastSendTime = Time.time;
         }
