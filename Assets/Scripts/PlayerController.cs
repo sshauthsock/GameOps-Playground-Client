@@ -114,7 +114,7 @@ public class PlayerController : MonoBehaviour
         if (moveDirection.magnitude >= 0.1f)
         {
             // 1. 위치 이동
-            Vector3 nextPosition = _rb.position + moveDirection * moveSpeed * Time.deltaTime;
+            Vector3 nextPosition = _rb.position + moveDirection * moveSpeed * Time.fixedDeltaTime;
             _rb.MovePosition(nextPosition);
 
             // 2. 회전 즉시 고정 (A/D 버튼 우선 순위)
