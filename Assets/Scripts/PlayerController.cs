@@ -4,6 +4,12 @@ using System.Collections;
 
 public class PlayerController : MonoBehaviour
 {
+
+    [Header("Combat Settings")]
+    public float maxHealth = 100f;
+    public float currentHealth;
+    public bool isDead = false;
+
     [Header("Fire Settings")]
     public TextMeshProUGUI nameTagText;
     public GameObject shellPrefab; // Shell 프리팹 연결
@@ -69,8 +75,29 @@ public class PlayerController : MonoBehaviour
             nameTagText = GetComponentInChildren<TextMeshProUGUI>(true);
         }
 
-        // Start에서는 색상을 적용하지 않음 (SetPlayerID에서 적용됨)
-        // ApplyTankColors()는 SetPlayerID에서 호출됨
+        currentHealth = maxHealth;
+    }
+    public void TakeDamage(float amount)
+    {
+        if (isDead) return;
+
+        currentHealth -= amount;
+        Debug.Log($"[ID {this.name}] 데미지 발생! 남은 체력: {currentHealth}");
+
+        if (currentHealth <= 0)
+        {
+            Die();
+        }
+    }
+
+    private void Die()
+    {
+        isDead = true;
+        Debug.Log($"[ID {this.name}] 사망하였습니다.");
+        // 일단 화면에서 보이지 않게 처리
+        gameObject.SetActive(false);
+
+        // TODO: 서버에 사망 패킷 전송 및 리스폰 로직 연결
     }
     private void ApplyTankColors()
     {
