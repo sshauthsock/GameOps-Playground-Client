@@ -31,27 +31,25 @@ public class PlayerManager : MonoBehaviour
     // --- 핵심 기능 1: 캐릭터 생성 ---
     public void AddPlayer(int playerID, string userName, Vector3 position)
     {
-        if (_players.ContainsKey(playerID))
-        {
-            Debug.LogWarning($"Player ID {playerID}는 이미 존재합니다.");
-            return;
-        }
+        if (_players.ContainsKey(playerID)) return;
 
-        // 프리팹을 인스턴스화하고 위치 설정
+        // 1. 캐릭터 생성
         GameObject playerObj = Instantiate(playerPrefab, position, Quaternion.identity);
         playerObj.name = $"Player_{playerID}_{userName}";
 
+        // 2. 컨트롤러 가져오기
         PlayerController controller = playerObj.GetComponent<PlayerController>();
 
-        // 딕셔너리에 추가
+        // 3. 딕셔너리에 추가
         _players.Add(playerID, playerObj);
-        Debug.Log($"[PlayerManager] Player {userName} (ID: {playerID}) 생성 완료.");
 
-        // 만약 이 플레이어가 '나'라면 별도의 로직 실행 (예: 카메라 추적)
-        if (playerID == MyPlayerID && controller != null)
+        // 4. [핵심 추가] 생성되자마자 ID와 팀 색상을 부여합니다.
+        if (controller != null)
         {
-            controller.isLocalPlayer = true;
-            Debug.Log("이것은 내 플레이어입니다. (로컬 플레이어)");
+            // MyPlayerID와 비교하여 로컬 여부 결정
+            bool isLocal = (playerID == MyPlayerID);
+            controller.SetPlayerID(playerID, isLocal);
+            Debug.Log($"[PlayerManager] ID {playerID} 설정 완료. Local: {isLocal}");
         }
     }
 
@@ -106,5 +104,16 @@ public class PlayerManager : MonoBehaviour
             // 만약 이 로그가 뜬다면 딕셔너리에 해당 ID가 없는 것입니다.
             Debug.LogWarning($"[PlayerManager] ID {playerID}를 딕셔너리에서 찾을 수 없음!");
         }
+    }
+    public GameObject GetPlayerById(int id)
+    {
+        // 딕셔너리에서 ID를 키로 사용하여 객체를 찾습니다.
+        if (_players.TryGetValue(id, out GameObject player))
+        {
+            return player;
+        }
+
+        Debug.LogWarning($"[PlayerManager] ID {id}에 해당하는 플레이어를 찾을 수 없습니다.");
+        return null;
     }
 }

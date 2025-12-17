@@ -555,6 +555,18 @@ public class NetworkManager : MonoBehaviour
         Debug.Log($"[수신] ID: {playerID}, Pos: {position}, RotW: {rw}");
 
         PlayerManager.Instance.UpdatePlayerPosition(playerID, position, rotation);
+
+        GameObject playerObj = PlayerManager.Instance.GetPlayerById(playerID);
+        if (playerObj != null)
+        {
+            PlayerController pc = playerObj.GetComponent<PlayerController>();
+            if (pc != null)
+            {
+                // [중요] PlayerManager의 MyPlayerID와 패킷의 playerID를 비교합니다.
+                bool isLocal = (playerID == PlayerManager.Instance.MyPlayerID);
+                pc.SetPlayerID(playerID, isLocal);
+            }
+        }
     }
     public void ForceProcessMoveDummy(int playerID, Vector3 position, Quaternion rotation)
     {
