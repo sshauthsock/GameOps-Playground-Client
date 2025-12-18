@@ -24,7 +24,15 @@ public class NetworkManager : MonoBehaviour
     public string ConnectedUserName { get; private set; }
     private void Update()
     {
-        // 빈 상태 유지
+        // 패킷 큐에서 패킷을 처리합니다.
+        lock (_packetQueue)
+        {
+            if (_packetQueue.Count > 0)
+            {
+                byte[] packetData = _packetQueue.Dequeue();
+                HandlePacket(packetData);
+            }
+        }
     }
 
     void Start()
@@ -64,14 +72,44 @@ public class NetworkManager : MonoBehaviour
             if (IS_DUMMY_MODE)
             {
                 //  DUMMY MODE일 때만 ID 291 응답을 강제 주입
-                byte[] dummyRoomListAns = MakeDummyRoomListResponsePacket();
-                _packetQueue.Enqueue(dummyRoomListAns);
-                Debug.Log("ID 291 (RoomList Ans) 더미 패킷 주입 완료.");
-
-                ForceProcessPackets();
-                Debug.Log("[NetworkManager] ID 291 주입 및 LobbyManager에게 즉시 처리 요청 완료.");
+                // LobbyManager가 준비될 때까지 잠시 대기
+                StartCoroutine(WaitForLobbyManagerAndProcessRoomList());
             }
         }
+        else if (scene.buildIndex == 3) // RoomScene
+        {
+            Debug.Log($"씬 로드 완료: {scene.name} (Build Index: {scene.buildIndex})");
+            // RoomScene은 RoomManager가 Start()에서 처리하므로 여기서는 특별한 작업 없음
+        }
+    }
+
+    private IEnumerator WaitForLobbyManagerAndProcessRoomList()
+    {
+        // LobbyManager.Instance가 준비될 때까지 대기
+        float timeout = 5f;
+        float elapsed = 0f;
+        while (LobbyManager.Instance == null && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+
+        if (LobbyManager.Instance == null)
+        {
+            Debug.LogError("[NetworkManager] LobbyManager.Instance가 5초 내에 생성되지 않았습니다.");
+            yield break;
+        }
+
+        // ID 291 응답을 강제 주입
+        byte[] dummyRoomListAns = MakeDummyRoomListResponsePacket();
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyRoomListAns);
+        }
+        Debug.Log("ID 291 (RoomList Ans) 더미 패킷 주입 완료.");
+        
+        // 즉시 처리
+        ForceProcessPackets();
     }
 
     public void Connect()
@@ -166,6 +204,13 @@ public class NetworkManager : MonoBehaviour
 
     public void SendPacket(byte[] packet)
     {
+        // 더미 모드에서는 실제 전송을 건너뜁니다.
+        if (IS_DUMMY_MODE)
+        {
+            Debug.Log($"[DUMMY MODE] 패킷 전송 시뮬레이션. 길이: {packet.Length} 바이트");
+            return;
+        }
+
         if (_stream == null || _client == null || !_client.Connected)
         {
             Debug.LogError("서버에 연결되지 않아 패킷을 보낼 수 없습니다.");
@@ -187,10 +232,13 @@ public class NetworkManager : MonoBehaviour
 
     public void ForceProcessPackets()
     {
-        while (_packetQueue.Count > 0)
+        lock (_packetQueue)
         {
-            byte[] packetData = _packetQueue.Dequeue();
-            HandlePacket(packetData);
+            while (_packetQueue.Count > 0)
+            {
+                byte[] packetData = _packetQueue.Dequeue();
+                HandlePacket(packetData);
+            }
         }
     }
 
@@ -205,17 +253,29 @@ public class NetworkManager : MonoBehaviour
             case 101:
                 ProcessLoginResponse(reader);
                 break;
+            case 281:
+                ProcessCreateRoomResponse(reader);
+                break;
             case 291:
                 ProcessRoomListResponse(reader);
                 break;
             case 301:
                 ProcessJoinRoomResponse(reader);
                 break;
+            case 311:
+                ProcessRoomInfoResponse(reader);
+                break;
+            case 321:
+                ProcessPlayerReadyResponse(reader);
+                break;
             case 401:
                 ProcessGameStartResponse(reader);
                 break;
             case 501:
                 ProcessPlayerMoveResponse(reader);
+                break;
+            case 701:
+                ProcessDamageResponse(reader);
                 break;
         }
     }
@@ -232,6 +292,30 @@ public class NetworkManager : MonoBehaviour
         else
         {
             Debug.LogError($"로그인 실패! 결과 코드: {result}");
+        }
+    }
+
+    private void ProcessCreateRoomResponse(PacketReader reader)
+    {
+        int result = reader.ReadInt32();
+        int roomID = reader.ReadInt32();
+        string roomName = reader.ReadUserName(20);
+
+        if (result == 1)
+        {
+            Debug.Log($"방 생성 성공! RoomID: {roomID}, RoomName: {roomName}. 방 입장 요청을 전송합니다.");
+            // 방 생성 성공 시 자동으로 방에 입장
+            SendJoinRoomRequest(roomID);
+            
+            // 더미 모드일 경우 즉시 방 입장 응답 처리
+            if (IS_DUMMY_MODE)
+            {
+                ForceProcessJoinRoomDummy(roomID);
+            }
+        }
+        else
+        {
+            Debug.LogError($"방 생성 실패! 결과 코드: {result}");
         }
     }
 
@@ -393,13 +477,52 @@ public class NetworkManager : MonoBehaviour
 
         if (result == 1)
         {
-            Debug.Log($"방 입장 성공! RoomID: {roomID}. Game 씬으로 이동합니다.");
+            Debug.Log($"방 입장 성공! RoomID: {roomID}. Room 씬으로 이동합니다.");
 
-            UnityEngine.SceneManagement.SceneManager.LoadScene(2);
+            // RoomScene으로 이동 (씬 인덱스 3으로 가정, 필요시 수정)
+            UnityEngine.SceneManagement.SceneManager.LoadScene(3);
         }
         else
         {
             Debug.LogError($"방 입장 실패! RoomID: {roomID}, 결과 코드: {result}");
+        }
+    }
+
+    private void ProcessRoomInfoResponse(PacketReader reader)
+    {
+        int roomID = reader.ReadInt32();
+        string roomName = reader.ReadUserName(20);
+        int playerCount = reader.ReadInt32();
+        int maxPlayers = reader.ReadInt32();
+
+        Debug.Log($"[Room Info] ID: {roomID}, Name: {roomName}, Players: {playerCount}/{maxPlayers}");
+
+        // RoomManager에 방 정보 전달
+        if (RoomManager.Instance != null)
+        {
+            RoomManager.Instance.UpdateRoomInfo(roomID, roomName, playerCount, maxPlayers);
+        }
+    }
+
+    private void ProcessPlayerReadyResponse(PacketReader reader)
+    {
+        int playerCount = reader.ReadInt32();
+        List<PlayerReadyData> players = new List<PlayerReadyData>();
+
+        for (int i = 0; i < playerCount; i++)
+        {
+            int playerID = reader.ReadInt32();
+            string playerName = reader.ReadUserName(20);
+            bool isReady = reader.ReadBoolean();
+            players.Add(new PlayerReadyData(playerID, playerName, isReady));
+        }
+
+        Debug.Log($"[Player Ready] {playerCount}명의 플레이어 정보 수신");
+
+        // RoomManager에 플레이어 정보 전달
+        if (RoomManager.Instance != null)
+        {
+            RoomManager.Instance.UpdatePlayerList(players);
         }
     }
     private byte[] MakeDummyGameStartPacket()
@@ -508,6 +631,172 @@ public class NetworkManager : MonoBehaviour
         SendPacket(readyPacket);
         Debug.Log("ID 400 (Game Ready Req) 패킷이 M3 서버로 전송되었습니다.");
     }
+
+    // 방 생성 요청 (ID 280)
+    public byte[] MakeCreateRoomRequestPacket(string roomName)
+    {
+        const ushort MESSAGE_ID = 280;
+        const int ROOM_NAME_LENGTH = 20;
+        const ushort TOTAL_LENGTH = 4 + ROOM_NAME_LENGTH; // Header(4) + RoomName(20)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteUserName(roomName, ROOM_NAME_LENGTH);
+
+        Debug.Log($"방 생성 요청 패킷 (ID 280) 생성 완료. RoomName: {roomName}");
+        return builder.GetPacket();
+    }
+
+    public void SendCreateRoomRequest(string roomName)
+    {
+        byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
+        SendPacket(createPacket);
+        Debug.Log($"ID 280 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+    }
+
+    // 방 정보 요청 (ID 310)
+    public byte[] MakeRoomInfoRequestPacket()
+    {
+        const ushort MESSAGE_ID = 310;
+        const ushort TOTAL_LENGTH = 4; // Header(4)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+
+        Debug.Log("방 정보 요청 패킷 (ID 310) 생성 완료.");
+        return builder.GetPacket();
+    }
+
+    public void SendRoomInfoRequest()
+    {
+        byte[] infoPacket = MakeRoomInfoRequestPacket();
+        SendPacket(infoPacket);
+        Debug.Log("ID 310 (Room Info Req) 패킷이 M3 서버로 전송되었습니다.");
+    }
+
+    // 플레이어 Ready 상태 요청 (ID 320)
+    public byte[] MakePlayerReadyRequestPacket()
+    {
+        const ushort MESSAGE_ID = 320;
+        const ushort TOTAL_LENGTH = 4; // Header(4)
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+
+        Debug.Log("플레이어 Ready 요청 패킷 (ID 320) 생성 완료.");
+        return builder.GetPacket();
+    }
+
+    public void SendPlayerReadyRequest()
+    {
+        byte[] readyPacket = MakePlayerReadyRequestPacket();
+        SendPacket(readyPacket);
+        Debug.Log("ID 320 (Player Ready Req) 패킷이 M3 서버로 전송되었습니다.");
+    }
+
+    // 더미 모드용 방 생성 응답
+    private byte[] MakeDummyCreateRoomResponsePacket(int roomID, string roomName)
+    {
+        const ushort MESSAGE_ID = 281;
+        const int RESULT_SUCCESS = 1;
+        const ushort TOTAL_LENGTH = 4 + 4 + 20; // Header + Result + RoomID + RoomName
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(RESULT_SUCCESS);
+        builder.WriteInt32(roomID);
+        builder.WriteUserName(roomName, 20);
+
+        Debug.Log($"더미 패킷 생성 완료: ID 281 (방 생성 성공). RoomID: {roomID}, RoomName: {roomName}");
+        return builder.GetPacket();
+    }
+
+    internal void ForceProcessCreateRoomDummy(string roomName)
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        // 더미 방 ID 생성
+        int dummyRoomID = UnityEngine.Random.Range(1000, 9999);
+        byte[] dummyCreateAns = MakeDummyCreateRoomResponsePacket(dummyRoomID, roomName);
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyCreateAns);
+        }
+        Debug.Log($"ID 281 (Create Room Ans, RoomID: {dummyRoomID}) 더미 패킷 주입 완료. (Force)");
+
+        // 즉시 처리
+        ForceProcessPackets();
+    }
+
+    // 더미 모드용 방 정보 응답
+    private byte[] MakeDummyRoomInfoResponsePacket(int roomID, string roomName, int playerCount, int maxPlayers)
+    {
+        const ushort MESSAGE_ID = 311;
+        const ushort TOTAL_LENGTH = 4 + 4 + 20 + 4 + 4; // Header + RoomID + RoomName + PlayerCount + MaxPlayers
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(roomID);
+        builder.WriteUserName(roomName, 20);
+        builder.WriteInt32(playerCount);
+        builder.WriteInt32(maxPlayers);
+
+        Debug.Log($"더미 패킷 생성 완료: ID 311 (방 정보). RoomID: {roomID}");
+        return builder.GetPacket();
+    }
+
+    internal void ForceProcessRoomInfoDummy(int roomID, string roomName, int playerCount, int maxPlayers)
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        byte[] dummyInfoAns = MakeDummyRoomInfoResponsePacket(roomID, roomName, playerCount, maxPlayers);
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyInfoAns);
+        }
+        Debug.Log($"ID 311 (Room Info Ans) 더미 패킷 주입 완료. (Force)");
+
+        ForceProcessPackets();
+    }
+
+    // 더미 모드용 플레이어 Ready 응답
+    private byte[] MakeDummyPlayerReadyResponsePacket(List<PlayerReadyData> players)
+    {
+        const ushort MESSAGE_ID = 321;
+        int playerCount = players.Count;
+        ushort TOTAL_LENGTH = (ushort)(4 + 4 + (playerCount * (4 + 20 + 1))); // Header + Count + (ID + Name + Ready) * Count
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(playerCount);
+
+        foreach (var player in players)
+        {
+            builder.WriteInt32(player.PlayerID);
+            builder.WriteUserName(player.PlayerName, 20);
+            builder.WriteBoolean(player.IsReady);
+        }
+
+        Debug.Log($"더미 패킷 생성 완료: ID 321 (플레이어 Ready). PlayerCount: {playerCount}");
+        return builder.GetPacket();
+    }
+
+    internal void ForceProcessPlayerReadyDummy(List<PlayerReadyData> players)
+    {
+        if (!IS_DUMMY_MODE) return;
+
+        byte[] dummyReadyAns = MakeDummyPlayerReadyResponsePacket(players);
+
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(dummyReadyAns);
+        }
+        Debug.Log($"ID 321 (Player Ready Ans) 더미 패킷 주입 완료. (Force)");
+
+        ForceProcessPackets();
+    }
     public byte[] MakeMoveRequestPacket(Vector3 position, Quaternion rotation)
     {
         const ushort MESSAGE_ID = 500;
@@ -606,21 +895,47 @@ public class NetworkManager : MonoBehaviour
 
         SendPacket(builder.GetPacket());
         Debug.Log($"[Send] ID {targetID}에게 {damage} 데미지 보고 전송.");
+
+        // --- 더미 모드 전용 로직 추가 ---
+        // 서버가 없으므로, 보낸 내용을 그대로 '수신 패킷(ID 701)'인 것처럼 시뮬레이션합니다.
+        StartCoroutine(SimulateDamageResponse(targetID, damage));
+    }
+    private IEnumerator SimulateDamageResponse(int targetID, float damage)
+    {
+        // 서버 왕복 시간을 고려해 아주 잠깐(0.1초) 대기
+        yield return new WaitForSeconds(0.1f);
+
+        // 701 패킷(서버 통보)을 받은 것과 동일한 효과를 줍니다.
+        GameObject targetObj = PlayerManager.Instance.GetPlayerById(targetID);
+        if (targetObj != null)
+        {
+            PlayerController pc = targetObj.GetComponent<PlayerController>();
+            if (pc != null)
+            {
+                Debug.Log($"[Dummy Response] 서버로부터 ID {targetID}의 체력 차감 통보를 받음.");
+                pc.TakeDamage(damage); // 이제 여기서 HP Bar가 줄어듭니다!
+            }
+        }
     }
     private void ProcessDamageResponse(PacketReader reader)
     {
         int targetID = reader.ReadInt32();
         float damage = reader.ReadFloat();
 
-        // PlayerManager를 통해 해당 ID의 탱크를 찾아 데미지 적용
-        GameObject playerObj = PlayerManager.Instance.GetPlayerById(targetID);
-        if (playerObj != null)
+        Debug.Log($"[ID 701 수신] 대상: {targetID}, 데미지: {damage}");
+
+        GameObject targetObj = PlayerManager.Instance.GetPlayerById(targetID);
+        if (targetObj != null)
         {
-            PlayerController pc = playerObj.GetComponent<PlayerController>();
+            PlayerController pc = targetObj.GetComponent<PlayerController>();
             if (pc != null)
             {
-                pc.TakeDamage(damage); // 실제 체력 및 UI 차감 
+                pc.TakeDamage(damage); // 여기가 실행되어야 HP Bar가 줄어듭니다.
             }
+        }
+        else
+        {
+            Debug.LogError($"[ID 701 에러] ID {targetID}에 해당하는 플레이어를 찾을 수 없습니다!");
         }
     }
 }

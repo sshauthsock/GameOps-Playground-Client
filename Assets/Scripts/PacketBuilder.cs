@@ -97,4 +97,9 @@ public class PacketBuilder
             }
         }
     }
+
+    public void WriteBoolean(bool value)
+    {
+        _writer.Write(value);
+    }
 }

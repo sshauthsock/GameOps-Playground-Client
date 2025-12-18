@@ -18,18 +18,23 @@ public class Shell : MonoBehaviour
 
         PlayerController target = other.GetComponentInParent<PlayerController>();
 
-        if (target != null && !target.isDead)
+        if (target != null)
         {
-            // [중요] 내가 쏜 포탄이 맞았을 때만 서버에 보고합니다.
-            // 현재는 더미 모드이므로 일단 보고 패킷을 날려봅니다.
-            int targetID = int.Parse(target.name.Split('_')[1]); // 이름에서 ID 추출 (예: Player_1000 -> 1000)
-            NetworkManager.Instance.SendDamageReport(targetID, damage);
+            Debug.Log($"[Shell] 충돌 감지! 대상 이름: {target.gameObject.name}");
 
-            Destroy(gameObject); // 포탄 소멸 [cite: 18]
-        }
-        else if (!other.CompareTag("Player"))
-        {
-            Destroy(gameObject); // 벽 충돌 시 소멸 [cite: 18]
+            // 이름 규칙(Player_ID_...) 확인
+            string[] nameParts = target.gameObject.name.Split('_');
+            if (nameParts.Length > 1 && int.TryParse(nameParts[1], out int targetID))
+            {
+                Debug.Log($"[Shell] 서버로 데미지 보고 시도: TargetID {targetID}");
+                NetworkManager.Instance.SendDamageReport(targetID, damage);
+            }
+            else
+            {
+                Debug.LogError($"[Shell] ID 추출 실패! 대상 이름 형식을 확인하세요: {target.gameObject.name}");
+            }
+
+            Destroy(gameObject);
         }
     }
     // private void OnTriggerEnter(Collider other)
