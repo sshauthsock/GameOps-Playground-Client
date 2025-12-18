@@ -97,6 +97,16 @@ public class RoomUI : MonoBehaviour
         if (StartGameButton != null)
         {
             StartGameButton.interactable = true;
+            Debug.Log("[RoomUI] Start Game 버튼 활성화");
+        }
+    }
+
+    public void OnNotAllPlayersReady()
+    {
+        if (StartGameButton != null)
+        {
+            StartGameButton.interactable = false;
+            Debug.Log("[RoomUI] Start Game 버튼 비활성화 (모든 플레이어가 Ready가 아님)");
         }
     }
 

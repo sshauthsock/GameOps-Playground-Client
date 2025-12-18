@@ -16,6 +16,9 @@ public class LobbyUI : MonoBehaviour
     public Button ConfirmCreateButton;
     public Button CancelCreateButton;
 
+    [Header("Refresh")]
+    public Button RefreshButton;
+
     private void Start()
     {
         // 방 생성 버튼 이벤트 설정
@@ -35,6 +38,12 @@ public class LobbyUI : MonoBehaviour
         {
             CancelCreateButton.onClick.RemoveAllListeners();
             CancelCreateButton.onClick.AddListener(OnCancelCreateButtonClicked);
+        }
+
+        if (RefreshButton != null)
+        {
+            RefreshButton.onClick.RemoveAllListeners();
+            RefreshButton.onClick.AddListener(OnRefreshButtonClicked);
         }
 
         // 초기에는 생성 패널 숨김
@@ -98,6 +107,19 @@ public class LobbyUI : MonoBehaviour
         if (CreateRoomPanel != null)
         {
             CreateRoomPanel.SetActive(false);
+        }
+    }
+
+    private void OnRefreshButtonClicked()
+    {
+        Debug.Log("[LobbyUI] 방 목록 새로고침 요청");
+        if (NetworkManager.Instance != null)
+        {
+            NetworkManager.Instance.SendRoomListRequest();
+        }
+        else
+        {
+            Debug.LogError("[LobbyUI] NetworkManager.Instance가 null입니다.");
         }
     }
 

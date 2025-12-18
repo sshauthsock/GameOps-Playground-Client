@@ -44,39 +44,10 @@ public class GameManager : MonoBehaviour
     }
     void Start()
     {
-        StartCoroutine(DelayedGameStart());
-    }
-    private IEnumerator DelayedGameStart()
-    {
-        //  한 프레임을 기다려 모든 컴포넌트의 Awake/Start 완료를 보장
-        yield return null;
-
-        // 이 시점에서는 PlayerManager.Instance가 Null이 아닐 확률이 높습니다.
-        // (PlayerManager가 DontDestroyOnLoad 객체라면 더욱 확실합니다.)
-        if (PlayerManager.Instance == null)
-        {
-            Debug.LogError("FATAL ERROR: PlayerManager가 여전히 null입니다. Project Settings -> Script Execution Order를 확인하십시오!");
-            yield break;
-        }
-
-        RequestGameReady();
-    }
-    private void RequestGameReady()
-    {
-        Debug.Log("[GameManager] 서버에 게임 준비 요청 (ID 400) 전송 시도.");
-
-        // 1. NetworkManager.Instance.SendGameReadyRequest(); // 실제 ID 400 전송 (미구현)
-
-        // 2. 더미 테스트 환경이므로, 응답 패킷(ID 401)을 강제 주입하여 시작 로직 테스트
-        if (NetworkManager.Instance.IS_DUMMY_MODE)
-        {
-            //  모든 더미 로직을 NetworkManager에게 위임
-            NetworkManager.Instance.ForceProcessGameStartDummy();
-        }
-        else
-        {
-            NetworkManager.Instance.SendGameReadyRequest();
-        }
+        // 게임 씬이 로드되면 NetworkManager의 OnSceneLoaded에서 
+        // WaitForGameManagerAndStartGame()을 통해 StartGameLogic()이 호출됩니다.
+        // 따라서 여기서는 특별한 작업이 필요 없습니다.
+        Debug.Log("[GameManager] Start() 호출됨. NetworkManager에서 StartGameLogic() 호출 대기 중...");
     }
 
     // NetworkManager가 호출할 게임 시작 함수

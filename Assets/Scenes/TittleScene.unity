@@ -415,7 +415,7 @@ MonoBehaviour:
   m_EditorClassIdentifier: 
   serverIP: 127.0.0.1
   serverPort: 7777
-  IS_DUMMY_MODE: 1
+  IS_DUMMY_MODE: 0
 --- !u!1001 &1591329651
 PrefabInstance:
   m_ObjectHideFlags: 0
