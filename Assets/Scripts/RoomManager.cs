@@ -37,7 +37,7 @@ public class RoomManager : MonoBehaviour
         // roomUI가 할당되지 않았으면 자동으로 찾기
         if (roomUI == null)
         {
-            roomUI = FindObjectOfType<RoomUI>();
+            roomUI = FindFirstObjectByType<RoomUI>();
             if (roomUI != null)
             {
                 Debug.Log("[RoomManager] roomUI를 자동으로 찾았습니다.");
@@ -201,7 +201,7 @@ public class RoomManager : MonoBehaviour
                 // roomUI가 null이면 다시 찾기
                 if (roomUI == null)
                 {
-                    roomUI = FindObjectOfType<RoomUI>();
+                    roomUI = FindFirstObjectByType<RoomUI>();
                 }
                 
                 if (roomUI != null)
@@ -381,6 +381,11 @@ public class RoomManager : MonoBehaviour
                 roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
             }
         }
+    }
+
+    public List<PlayerReadyData> GetPlayerList()
+    {
+        return new List<PlayerReadyData>(_playerList);
     }
 
     public void OnUserLeft(int leaverID, int newHostID)

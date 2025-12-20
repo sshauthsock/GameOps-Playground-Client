@@ -23,16 +23,21 @@ public class PlayerController : MonoBehaviour
 
     [Header("Status")]
     public bool isLocalPlayer = false;
+    private bool _canControl = false; // 현재 턴인지 여부
+    private bool _hasFiredThisTurn = false; // 현재 턴에 발사했는지 여부를 기록하는 플래그 (중복 발사 방지)
+    private int _turnTimeLimitSec = 0; // 턴 제한 시간
+    private float _turnStartTime = 0f; // 턴 시작 시간
 
     private Vector3 _lastSentPosition;
     // 네트워크 동기화를 위한 목표 지점
     private Vector3 _targetPosition;
     private Quaternion _targetRotation;
+    private bool _isTargetPositionInitialized = false; // 초기 위치가 설정되었는지 확인
 
     private Rigidbody _rb;
 
     // 네트워크 전송 주기 관리
-    private float _lastSendTime = 0f;
+    private float _lastSendTime = -1f; // -1로 초기화하여 게임 시작 직후 즉시 전송되지 않도록 함
     private const float SEND_INTERVAL = 0.05f; // 초당 20회 전송
 
     void Awake()
@@ -48,8 +53,11 @@ public class PlayerController : MonoBehaviour
     {
         _rb = GetComponent<Rigidbody>();
 
-        // 초기 위치 설정
-        _targetPosition = transform.position;
+        // 초기 위치 설정 (SetNetworkPosition이 호출되지 않은 경우에만)
+        if (!_isTargetPositionInitialized)
+        {
+            _targetPosition = transform.position;
+        }
 
         if (isLocalPlayer)
         {
@@ -62,7 +70,11 @@ public class PlayerController : MonoBehaviour
             transform.rotation = Quaternion.Euler(0, -90f, 0);
         }
 
-        _targetRotation = transform.rotation;
+        // 초기 회전 설정 (SetNetworkPosition이 호출되지 않은 경우에만)
+        if (!_isTargetPositionInitialized)
+        {
+            _targetRotation = transform.rotation;
+        }
 
         // 리지드바디 설정 확인 (Is Kinematic이 켜져 있어야 보간이 깔끔합니다)
         if (_rb != null)
@@ -89,11 +101,22 @@ public class PlayerController : MonoBehaviour
         if (isDead) return;
 
         currentHealth -= amount;
+        
+        // HP가 0 이하로 내려가지 않도록 제한
+        if (currentHealth < 0)
+        {
+            currentHealth = 0;
+        }
 
         // HP Bar UI 업데이트
         if (hpBarSlider != null)
         {
             hpBarSlider.value = currentHealth;
+            Debug.Log($"[TakeDamage] {this.name} - HP Bar 업데이트: {currentHealth}/{maxHealth} (Slider value: {hpBarSlider.value})");
+        }
+        else
+        {
+            Debug.LogWarning($"[TakeDamage] {this.name} - hpBarSlider가 null입니다!");
         }
 
         Debug.Log($"[ID {this.name}] 남은 체력: {currentHealth}");
@@ -202,15 +225,33 @@ public class PlayerController : MonoBehaviour
     /// </summary>
     public void SetNetworkPosition(Vector3 pos, Quaternion rot)
     {
+        // [중요] transform.position을 직접 설정하여 즉시 위치를 업데이트
+        // 이렇게 하면 InterpolatePosition이 잘못된 초기 위치에서 보간하지 않습니다
+        
+        // 로컬 플레이어가 아닌 경우에만 네트워크 위치를 적용
+        // 로컬 플레이어는 직접 입력으로 제어되므로 네트워크 위치를 무시
+        if (!isLocalPlayer)
+        {
+            transform.position = pos;
+            transform.rotation = rot;
+        }
+        
         _targetPosition = pos;
         _targetRotation = rot;
+        _isTargetPositionInitialized = true; // 초기 위치가 설정되었음을 표시
+        
+        Debug.Log($"[SetNetworkPosition] PlayerID: {playerID}, 즉시 위치 설정: {pos}, 회전: {rot.eulerAngles}, isLocalPlayer: {isLocalPlayer}");
     }
 
     private void Update()
     {
-        if (isLocalPlayer && Input.GetKeyDown(KeyCode.Space))
+        // 자기 턴일 때만 입력 처리
+        if (isLocalPlayer && _canControl)
         {
-            CmdFire(); // 내 화면에서 발사 및 서버 알림
+            if (Input.GetKeyDown(KeyCode.Space))
+            {
+                CmdFire(); // 내 화면에서 발사 및 서버 알림
+            }
         }
     }
 
@@ -218,11 +259,15 @@ public class PlayerController : MonoBehaviour
     {
         if (isLocalPlayer)
         {
-            // 1. 내가 조작하는 경우: 입력 처리 및 물리 이동
-            HandleLocalMovement();
+            // 자기 턴일 때만 이동 가능
+            if (_canControl)
+            {
+                // 1. 내가 조작하는 경우: 입력 처리 및 물리 이동
+                HandleLocalMovement();
 
-            // 2. 서버로 내 위치 전송 (주기적)
-            SyncPositionToServer();
+                // 2. 서버로 내 위치 전송 (주기적)
+                SyncPositionToServer();
+            }
         }
         else
         {
@@ -232,18 +277,60 @@ public class PlayerController : MonoBehaviour
     }
     private void CmdFire()
     {
+        // [핵심 수정] 조작 불가능하거나, 이미 발사했다면 추가 발사 방지
+        // 중복 패킷으로 인해 컨트롤이 다시 활성화되더라도, 한 턴에 한 번만 발사하도록 보장
+        if (!_canControl || _hasFiredThisTurn)
+        {
+            Debug.LogWarning($"[PlayerController] 발사 요청 무시: canControl={_canControl}, hasFiredThisTurn={_hasFiredThisTurn}");
+            return;
+        }
+        
+        // 발사 기록을 true로 설정 (한 턴에 한 번만 발사하도록 보장)
+        _hasFiredThisTurn = true;
+        
         Fire(); // 내 화면에서 즉시 발사
-                // 서버 발사 패킷 전송 (ID 600)
-                // NetworkManager.Instance.SendFireRequest(firePoint.position, firePoint.rotation);
+        
+        // 서버 발사 패킷 전송 (ID 600)
+        if (NetworkManager.Instance != null && firePoint != null)
+        {
+            NetworkManager.Instance.SendFireRequest(firePoint.position, firePoint.rotation);
+        }
+        
+        // [핵심 수정] 발사 요청을 보낸 직후, 즉시 컨트롤을 비활성화하여 추가 조작을 막습니다.
+        // 이렇게 하면 서버의 턴 전환 응답을 기다리는 시간 동안 추가 발사를 할 수 없게 됩니다.
+        // 레이스 컨디션 문제를 해결하여 한 턴에 한 발만 발사되는 것을 보장합니다.
+        SetCanControl(false);
+        Debug.Log("[PlayerController] 포탄 발사 후 컨트롤을 즉시 비활성화합니다. 서버의 턴 전환 알림(ID 430)을 기다립니다.");
     }
 
     public void Fire()
     {
-        if (shellPrefab == null || firePoint == null) return;
+        // 기본값으로 로컬 firePoint 사용
+        if (firePoint != null)
+        {
+            Fire(firePoint.position, firePoint.rotation);
+        }
+        else
+        {
+            Debug.LogWarning($"[Fire] firePoint가 null입니다.");
+        }
+    }
 
-        // 포탄을 firePoint에서 약간 앞으로 이동시켜 생성 (즉시 충돌 방지)
-        Vector3 spawnPosition = firePoint.position + firePoint.forward * 0.5f;
-        GameObject shell = Instantiate(shellPrefab, spawnPosition, firePoint.rotation);
+    public void Fire(Vector3 firePosition, Quaternion fireRotation)
+    {
+        if (shellPrefab == null)
+        {
+            Debug.LogWarning($"[Fire] shellPrefab가 null입니다.");
+            return;
+        }
+
+        Debug.Log($"[Fire] ✅ 발사 시작! PlayerID: {this.playerID}, isLocalPlayer: {isLocalPlayer}, Position: {firePosition}, Rotation: {fireRotation}");
+
+        // 포탄을 firePosition에서 약간 앞으로 이동시켜 생성 (즉시 충돌 방지)
+        Vector3 forward = fireRotation * Vector3.forward;
+        Vector3 spawnPosition = firePosition + forward * 0.5f;
+        GameObject shell = Instantiate(shellPrefab, spawnPosition, fireRotation);
+        Debug.Log($"[Fire] ✅ 포탄 생성 완료! Shell: {shell.name}, Position: {spawnPosition}");
 
         // [중요] 생성된 포탄이 나(탱크)와 부딪히지 않게 설정 (Layer 설정이 안 되어 있을 때 유용)
         Collider tankCollider = GetComponent<Collider>();
@@ -257,7 +344,7 @@ public class PlayerController : MonoBehaviour
         if (rb != null)
         {
             // velocity를 직접 설정하여 즉시 앞으로 이동하도록 함
-            rb.linearVelocity = firePoint.forward * launchForce;
+            rb.linearVelocity = forward * launchForce;
         }
     }
     private void HandleLocalMovement()
@@ -328,6 +415,20 @@ public class PlayerController : MonoBehaviour
 
     private void InterpolatePosition()
     {
+        // [중요] _targetPosition이 초기화되지 않았으면 현재 위치를 유지
+        // (게임 시작 직후 잘못된 위치로 이동하는 것을 방지)
+        if (!_isTargetPositionInitialized)
+        {
+            // _targetPosition이 초기화되지 않았으면 현재 위치를 유지
+            return;
+        }
+        
+        // [추가 보호] 로컬 플레이어는 InterpolatePosition을 호출하지 않아야 함 (FixedUpdate에서 체크하지만 이중 보호)
+        if (isLocalPlayer)
+        {
+            return;
+        }
+        
         // 1. 위치만 부드럽게 따라가게 합니다.
         transform.position = Vector3.Lerp(transform.position, _targetPosition, Time.deltaTime * lerpSpeed);
 
@@ -342,6 +443,13 @@ public class PlayerController : MonoBehaviour
 
     private void SyncPositionToServer()
     {
+        // 게임 시작 후 최소 0.1초 대기 (탱크 위치가 완전히 초기화될 때까지)
+        if (_lastSendTime < 0f)
+        {
+            _lastSendTime = Time.time + 0.1f; // 0.1초 후부터 전송 시작
+            return;
+        }
+        
         if (Time.time > _lastSendTime + SEND_INTERVAL)
         {
             if (NetworkManager.Instance != null)
@@ -354,8 +462,11 @@ public class PlayerController : MonoBehaviour
         }
     }
 
+    public int playerID { get; private set; } = -1; // 플레이어 ID 저장
+    
     public void SetPlayerID(int id, bool isLocal)
     {
+        this.playerID = id;
         this.isLocalPlayer = isLocal;
         Debug.Log($"[SetPlayerID] ID: {id}, isLocal: {isLocal}");
 
@@ -478,6 +589,36 @@ public class PlayerController : MonoBehaviour
 
         // 탱크 색상 적용
         ApplyTankColors();
+    }
+
+    public void SetCanControl(bool canControl)
+    {
+        // 로컬 플레이어가 아니면 컨트롤 불가
+        if (!isLocalPlayer)
+        {
+            _canControl = false;
+            return;
+        }
+        
+        // [수정] ApplyTurnControlToAllPlayers에서 이미 검증을 완료했으므로,
+        // 여기서는 추가 검증 없이 canControl 값을 그대로 적용
+        // 중복 패킷 방지는 ProcessTurnStartNotify에서 _currentTurnPlayerID를 업데이트하는 시점으로 처리
+        _canControl = canControl;
+        Debug.Log($"[PlayerController] SetCanControl: {canControl} (PlayerID: {this.name}, isLocalPlayer: {isLocalPlayer})");
+    }
+
+    public void OnTurnStart(int turnTimeLimitSec)
+    {
+        // [핵심 수정] 턴이 시작될 때, 발사 기록을 초기화
+        // 중복 패킷으로 인해 OnTurnStart가 여러 번 호출되더라도, 발사 플래그는 초기화되어야 함
+        _hasFiredThisTurn = false;
+        
+        // [수정] ApplyTurnControlToAllPlayers에서 이미 isCurrentTurn을 확인하고 호출하므로,
+        // 여기서는 추가 검증 없이 타이머를 설정
+        // 중복 패킷 방지는 ProcessTurnStartNotify에서 _currentTurnPlayerID를 업데이트하는 시점으로 처리
+        _turnTimeLimitSec = turnTimeLimitSec;
+        _turnStartTime = Time.time;
+        Debug.Log($"[PlayerController] ✅ 턴 시작! PlayerID: {this.name}, TimeLimit: {turnTimeLimitSec}초, 발사 플래그 초기화됨");
     }
 
     private IEnumerator DelayedTextUpdate(TextMeshProUGUI text, int id)

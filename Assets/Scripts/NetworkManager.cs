@@ -21,28 +21,65 @@ public class NetworkManager : MonoBehaviour
     private bool _isRunning = true;
 
     internal Queue<byte[]> _packetQueue = new Queue<byte[]>();
+    private List<byte> _receiveBuffer = new List<byte>(); // 누적 버퍼 (불완전한 패킷 보관)
     public string ConnectedUserName { get; private set; }
-    public int ConnectedUserID { get; private set; } = -1; // 로그인한 사용자 ID
+    public int ConnectedUserID { get; set; } = -1; // 로그인한 사용자 ID (서버에서 받은 UserID) - set을 public으로 변경하여 GameManager에서 설정 가능
+    public string _myUniqueUserName; // 각 클라이언트마다 고유한 userName (public으로 변경하여 GameManager에서 접근 가능)
     public int CreatedRoomID { get; private set; } = -1; // 생성한 방 ID (방장 추적용)
     private int _pendingRoomID = -1; // 씬 전환 중인 방 ID (RoomManager 설정용)
+    private int _currentTurnPlayerID = -1; // 현재 턴 플레이어 ID
+    public List<PlayerInfo> _gamePlayerList = new List<PlayerInfo>(); // 게임 시작 시 플레이어 목록
+    private int _firstUserEnterID = -1; // 첫 번째 UserEnter Notify에서 받은 UserID (임시 식별용)
+    private bool _hasReceivedUserEnter = false; // UserEnter Notify를 받았는지 여부
     
     private void Update()
     {
         // 패킷 큐에서 패킷을 처리합니다.
         lock (_packetQueue)
         {
-            if (_packetQueue.Count > 0)
+            // 연결 상태 주기적 확인 (1초마다)
+            if (Time.frameCount % 60 == 0) // 대략 1초마다 (60fps 가정)
+            {
+                bool isConnected = _client != null && _client.Connected;
+                if (!isConnected && !IS_DUMMY_MODE)
+                {
+                    Debug.LogWarning($"[Update] ⚠️ 서버 연결이 끊어졌습니다! Connected: {isConnected}");
+                }
+            }
+
+            // 패킷 큐가 많이 쌓였을 때 한 번에 여러 개 처리 (최대 10개)
+            int maxProcessPerFrame = _packetQueue.Count > 10 ? 10 : _packetQueue.Count;
+            for (int i = 0; i < maxProcessPerFrame && _packetQueue.Count > 0; i++)
             {
                 int queueCount = _packetQueue.Count;
                 byte[] packetData = _packetQueue.Dequeue();
-                Debug.Log($"[Update] 패킷 처리 시작. 큐에 {queueCount}개 패킷 있음. 처리 중...");
+                if (i == 0) // 첫 번째 패킷만 로그 출력
+                {
+                    Debug.Log($"[Update] 패킷 처리 시작. 큐에 {queueCount}개 패킷 있음. 처리 중...");
+                }
                 HandlePacket(packetData);
+            }
+            
+            // 패킷 큐가 비어있을 때 주기적으로 상태 확인
+            if (_packetQueue.Count == 0 && Time.frameCount % 300 == 0 && UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex == 2)
+            {
+                // 게임 씬에서 5초마다 패킷 큐 상태 확인
+                Debug.Log($"[Update] 게임 씬 - 패킷 큐 상태: {_packetQueue.Count}개, 연결 상태: {(_client != null && _client.Connected ? "연결됨" : "끊김")}, _currentTurnPlayerID: {_currentTurnPlayerID}");
             }
         }
     }
 
     void Start()
     {
+        // 각 클라이언트마다 고유한 userName 생성 (타임스탬프 + 랜덤 + 프로세스 ID)
+        // 더 고유성을 보장하기 위해 System.Diagnostics.Process.GetCurrentProcess().Id 추가
+        long ticks = System.DateTime.Now.Ticks;
+        int random = UnityEngine.Random.Range(1000, 9999);
+        int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
+        _myUniqueUserName = $"Client_{ticks}_{random}_{processId}";
+        ConnectedUserName = _myUniqueUserName;
+        Debug.Log($"[NetworkManager] 고유 UserName 생성: {_myUniqueUserName}");
+        
         Connect();
 
         // TitleScene에서는 ID 101 더미 패킷을 즉시 처리하여 Lobby 씬으로 이동합니다.
@@ -253,6 +290,8 @@ public class NetworkManager : MonoBehaviour
                 
                 Debug.Log($"[Connect] ✅ 서버 연결 성공: {ip}:{port}");
                 Debug.Log($"[Connect] 연결 상태 확인: Connected={_client.Connected}");
+                Debug.Log($"[Connect] LocalEndPoint: {(_client.Client.LocalEndPoint?.ToString() ?? "null")}");
+                Debug.Log($"[Connect] RemoteEndPoint: {(_client.Client.RemoteEndPoint?.ToString() ?? "null")}");
 
                 // 1. 수신 스레드 시작: 서버 응답(ID 101)을 받기 위해 필요합니다.
                 _isRunning = true;
@@ -262,10 +301,13 @@ public class NetworkManager : MonoBehaviour
                 Debug.Log("[Connect] 수신 스레드 시작 완료.");
 
                 // 2. 로그인 요청(ID 100) 전송
-                string tempUserName = "UnityClient_01";
-                Debug.Log($"[Connect] 로그인 요청 전송 시작: UserName={tempUserName}");
-                SendLoginRequest(tempUserName);
-                Debug.Log("[Connect] 로그인 요청 전송 완료. 서버 응답 대기 중...");
+                // _myUniqueUserName이 Start()에서 설정되어 있음
+                string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
+                Debug.Log($"[Connect] 로그인 요청 전송 시작: UserName={loginUserName}");
+                Debug.Log($"[Connect] ⚠️⚠️⚠️ 서버로 ID 100 (로그인 요청) 패킷 전송 예정...");
+                SendLoginRequest(loginUserName);
+                Debug.Log("[Connect] ✅✅✅ 로그인 요청(ID 100) 전송 완료!");
+                Debug.Log("[Connect] ⚠️⚠️⚠️ 서버로부터 ID 101 (로그인 응답) 패킷 수신 대기 중...");
             }
             catch (SocketException ex)
             {
@@ -325,40 +367,125 @@ public class NetworkManager : MonoBehaviour
         const int MAX_BUFFER_SIZE = 4096;
         byte[] receiveBuffer = new byte[MAX_BUFFER_SIZE];
         int bytesRead = 0;
+        int loopCount = 0;
 
         while (_isRunning && _client != null && _client.Connected)
         {
             try
             {
+                // 연결 상태 주기적 확인 (5초마다)
+                loopCount++;
+                if (loopCount % 5000 == 0) // 5초마다 (Thread.Sleep(1)이므로 대략 5000번 = 5초)
+                {
+                    bool isConnected = _client != null && _client.Connected;
+                    bool streamAvailable = _stream != null && _stream.CanRead;
+                    Debug.Log($"[ReceiveLoop] 연결 상태 확인 - Connected: {isConnected}, StreamAvailable: {streamAvailable}, QueueSize: {_packetQueue.Count}");
+                }
+
                 if (_stream.DataAvailable)
                 {
                     bytesRead = _stream.Read(receiveBuffer, 0, receiveBuffer.Length);
                     if (bytesRead > 0)
                     {
-                        byte[] processedData = new byte[bytesRead];
-                        Array.Copy(receiveBuffer, processedData, bytesRead);
+                        // 누적 버퍼에 추가
+                        lock (_receiveBuffer)
+                        {
+                            for (int i = 0; i < bytesRead; i++)
+                            {
+                                _receiveBuffer.Add(receiveBuffer[i]);
+                            }
+                        }
+                        
+                        // 누적 버퍼에서 완전한 패킷들을 추출
+                        lock (_receiveBuffer)
+                        {
+                            while (_receiveBuffer.Count >= 4) // 최소 헤더 크기 (2바이트 길이 + 2바이트 ID)
+                            {
+                                // 패킷 길이 읽기 (첫 2바이트, little-endian)
+                                byte[] lengthBytes = new byte[2];
+                                lengthBytes[0] = _receiveBuffer[0];
+                                lengthBytes[1] = _receiveBuffer[1];
+                                if (!BitConverter.IsLittleEndian)
+                                {
+                                    Array.Reverse(lengthBytes);
+                                }
+                                ushort packetLength = BitConverter.ToUInt16(lengthBytes, 0);
+                                
+                                // 패킷이 완전히 도착했는지 확인
+                                if (_receiveBuffer.Count >= packetLength)
+                                {
+                                    // 완전한 패킷 추출
+                                    byte[] completePacket = new byte[packetLength];
+                                    _receiveBuffer.CopyTo(0, completePacket, 0, packetLength);
+                                    _receiveBuffer.RemoveRange(0, packetLength);
+                                    
+                                    // 패킷 큐에 추가
                         lock (_packetQueue)
                         {
-                            _packetQueue.Enqueue(processedData);
+                                        const int MAX_QUEUE_SIZE = 100; // 최대 큐 크기
+                                        if (_packetQueue.Count >= MAX_QUEUE_SIZE)
+                                        {
+                                            Debug.LogWarning($"[Recv] ⚠️ 패킷 큐가 가득 찼습니다! ({_packetQueue.Count}개) 오래된 패킷을 버립니다.");
+                                            _packetQueue.Dequeue(); // 오래된 패킷 제거
+                                        }
+                                        _packetQueue.Enqueue(completePacket);
+                                        if (_packetQueue.Count > 50)
+                                        {
+                                            Debug.LogWarning($"[Recv] ⚠️ 패킷 큐가 많이 쌓였습니다! ({_packetQueue.Count}개) 처리 지연 가능성.");
+                                        }
+                                        else
+                                        {
+                                            Debug.Log($"[Recv] 서버로부터 완전한 패킷 수신 (길이: {packetLength}바이트). 큐에 추가됨. 현재 큐 크기: {_packetQueue.Count}");
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    // 패킷이 아직 완전히 도착하지 않음, 다음 수신 대기
+                                    break;
+                                }
+                            }
                         }
-                        lock (_packetQueue)
-                        {
-                            Debug.Log($"[Recv] 서버로부터 {bytesRead} 바이트 수신. 큐에 추가됨. 현재 큐 크기: {_packetQueue.Count}");
-                        }
+                    }
+                    else if (bytesRead == 0)
+                    {
+                        // 서버가 연결을 끊었음
+                        Debug.LogWarning("[ReceiveLoop] 서버가 연결을 끊었습니다 (bytesRead == 0)");
+                        _isRunning = false;
+                        break;
                     }
                 }
                 Thread.Sleep(1);
             }
+            catch (System.IO.IOException ioEx)
+            {
+                // 네트워크 연결 끊김 (정상적인 종료일 수 있음)
+                Debug.LogWarning($"[ReceiveLoop] 네트워크 연결 끊김: {ioEx.Message}");
+                _isRunning = false;
+                break;
+            }
+            catch (System.Net.Sockets.SocketException socketEx)
+            {
+                // 소켓 오류
+                Debug.LogWarning($"[ReceiveLoop] 소켓 오류: {socketEx.Message}");
+                _isRunning = false;
+                break;
+            }
             catch (Exception e)
             {
-                if (_client.Connected)
+                if (_client != null && _client.Connected)
                 {
-                    Debug.LogError($"수신 중 오류 발생: {e.Message}");
+                    Debug.LogError($"[ReceiveLoop] 수신 중 오류 발생: {e.GetType().Name}: {e.Message}\n{e.StackTrace}");
+                }
+                else
+                {
+                    Debug.LogWarning($"[ReceiveLoop] 연결이 끊어졌습니다. 수신 루프 종료. ({e.GetType().Name}: {e.Message})");
                 }
                 _isRunning = false;
+                break;
             }
         }
-        Debug.Log("수신 루프 종료.");
+        Debug.Log("[ReceiveLoop] 수신 루프 종료.");
     }
 
     void OnDestroy()
@@ -411,12 +538,20 @@ public class NetworkManager : MonoBehaviour
     private void HandlePacket(byte[] packetData)
     {
         try
-        {
-            PacketReader reader = new PacketReader(packetData);
-            Packet header = reader.ReadHeader();
+    {
+        PacketReader reader = new PacketReader(packetData);
+        Packet header = reader.ReadHeader();
 
-            Debug.Log($"[Handle] 패킷 ID: {header.MessageID}, 총 길이: {header.TotalLength}");
-            switch (header.MessageID)
+        Debug.Log($"[Handle] 패킷 ID: {header.MessageID}, 총 길이: {header.TotalLength}");
+            
+            // 게임 관련 패킷인 경우 더 자세한 로그
+            if (header.MessageID == 400 || header.MessageID == 430 || header.MessageID == 420 || 
+                header.MessageID == 421 || header.MessageID == 422 || header.MessageID == 440)
+            {
+                Debug.Log($"[Handle] ⚠️⚠️⚠️ 게임 동기화 패킷 수신! ID: {header.MessageID} (총 길이: {header.TotalLength}바이트)");
+            }
+            
+        switch (header.MessageID)
         {
             case 101:
                 ProcessLoginResponse(reader);
@@ -451,8 +586,31 @@ public class NetworkManager : MonoBehaviour
             case 331:
                 ProcessGameStartNotify(reader);
                 break;
+            case 430:
+                ProcessTurnStartNotify(reader);
+                break;
+            case 400:
+                ProcessPlayerMoveNotify(reader);
+                break;
+            case 410:
+                ProcessPlayerAimNotify(reader);
+                break;
+            case 420:
+                Debug.Log($"[Handle] ⚠️⚠️⚠️ 게임 동기화 패킷 수신! ID: 420 (총 길이: {header.TotalLength}바이트)");
+                ProcessPlayerFireNotify(reader);
+                break;
             case 501:
                 ProcessPlayerMoveResponse(reader);
+                break;
+            case 421:
+                Debug.Log($"[Handle] ⚠️⚠️⚠️ 게임 동기화 패킷 수신! ID: 421 (총 길이: {header.TotalLength}바이트)");
+                ProcessFireResultNotify(reader);
+                break;
+            case 422:
+                ProcessPlayerDeathNotify(reader);
+                break;
+            case 440:
+                ProcessGameEndNotify(reader);
                 break;
             case 701:
                 ProcessDamageResponse(reader);
@@ -471,19 +629,20 @@ public class NetworkManager : MonoBehaviour
     private void ProcessLoginResponse(PacketReader reader)
     {
         try
-        {
-            int result = reader.ReadInt32();
+    {
+        int result = reader.ReadInt32();
             Debug.Log($"[ProcessLoginResponse] 로그인 응답 수신: result={result}");
             
-            if (result == 1)
-            {
-                Debug.Log("로그인 성공! Lobby 씬으로 이동합니다.");
-                ConnectedUserName = "UnityClient_01";
-                UnityEngine.SceneManagement.SceneManager.LoadScene(1);
-            }
-            else
-            {
-                Debug.LogError($"로그인 실패! 결과 코드: {result}");
+        if (result == 1)
+        {
+            Debug.Log("로그인 성공! Lobby 씬으로 이동합니다.");
+                // ConnectedUserName은 Start()에서 이미 설정됨
+                Debug.Log($"[ProcessLoginResponse] ConnectedUserName: {ConnectedUserName}");
+            UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+        }
+        else
+        {
+            Debug.LogError($"로그인 실패! 결과 코드: {result}");
             }
         }
         catch (Exception ex)
@@ -498,7 +657,7 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.Log("[ProcessCreateRoomResponse] 방 생성 응답 처리 시작.");
             // ID 301: [NewRoomID (4 bytes, int)]만 있음
-            int roomID = reader.ReadInt32();
+        int roomID = reader.ReadInt32();
 
             Debug.Log($"[ProcessCreateRoomResponse] 방 생성 성공! NewRoomID: {roomID}. 방장으로 설정됩니다.");
             
@@ -524,33 +683,33 @@ public class NetworkManager : MonoBehaviour
     private void ProcessRoomListResponse(PacketReader reader)
     {
         try
-        {
-            Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
-            List<RoomData> roomList = new List<RoomData>();
-            int roomCount = reader.ReadInt32();
+    {
+        Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
+        List<RoomData> roomList = new List<RoomData>();
+        int roomCount = reader.ReadInt32();
             Debug.Log($"[RoomList] 방 개수: {roomCount}");
 
-            for (int i = 0; i < roomCount; i++)
-            {
-                int roomID = reader.ReadInt32();
-                string roomName = reader.ReadUserName(20);
-                int userCount = reader.ReadInt32();
+        for (int i = 0; i < roomCount; i++)
+        {
+            int roomID = reader.ReadInt32();
+            string roomName = reader.ReadUserName(20);
+            int userCount = reader.ReadInt32();
 
-                RoomData room = new RoomData(roomID, roomName, userCount);
-                roomList.Add(room);
+            RoomData room = new RoomData(roomID, roomName, userCount);
+            roomList.Add(room);
 
-                Debug.Log($"[Room Info] ID: {roomID}, Name: {roomName}, Users: {userCount}");
-            }
+            Debug.Log($"[Room Info] ID: {roomID}, Name: {roomName}, Users: {userCount}");
+        }
 
             Debug.Log($"총 {roomCount}개의 방 목록 처리 완료. LobbyManager.Instance 체크 중...");
 
-            if (LobbyManager.Instance != null)
-            {
+        if (LobbyManager.Instance != null)
+        {
                 Debug.Log($"[RoomList] LobbyManager.Instance 발견. 방 목록 업데이트 중...");
-                LobbyManager.Instance.UpdateRoomList(roomList);
-            }
-            else
-            {
+            LobbyManager.Instance.UpdateRoomList(roomList);
+        }
+        else
+        {
                 Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}");
                 Debug.LogWarning("방 목록을 받았지만 LobbyScene이 아니거나 LobbyManager가 아직 초기화되지 않았습니다.");
             }
@@ -604,17 +763,20 @@ public class NetworkManager : MonoBehaviour
     public void SendLoginRequest(string userName)
     {
         const ushort MESSAGE_ID = 100;
-        // 패킷 길이 계산: Header(4) + String 길이(4) + String 데이터(가변)
-        int stringLength = System.Text.Encoding.UTF8.GetByteCount(userName);
-        ushort TOTAL_LENGTH = (ushort)(4 + 4 + stringLength);
+        const int USER_NAME_LENGTH = 20; // 서버가 기대하는 고정 길이
+        const ushort TOTAL_LENGTH = (ushort)(4 + USER_NAME_LENGTH); // Header(4) + UserName(20)
+        
+        Debug.Log($"[SendLoginRequest] ========== ID 100 (로그인 요청) 패킷 전송 시작 ==========");
+        Debug.Log($"[SendLoginRequest] UserName: {userName}, 고정 길이: {USER_NAME_LENGTH}바이트");
 
         PacketBuilder builder = new PacketBuilder();
         builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
-        builder.WriteString(userName); //  이 userName이 패킷에 담겨야 합니다.
+        builder.WriteUserName(userName, USER_NAME_LENGTH); // 서버가 기대하는 20바이트 고정 길이 형식
 
         byte[] loginPacket = builder.GetPacket();
+        Debug.Log($"[SendLoginRequest] 패킷 생성 완료 - 총 길이: {loginPacket.Length}바이트 (기대: {TOTAL_LENGTH}바이트)");
         SendPacket(loginPacket);
-        Debug.Log($"ID 100 (로그인 요청) 패킷 전송 완료. User: {userName}");
+        Debug.Log($"[SendLoginRequest] ✅✅✅ ID 100 (로그인 요청) 패킷 전송 완료! User: {userName}");
     }
 
     public byte[] MakeLoginPacket(string userName)
@@ -707,21 +869,26 @@ public class NetworkManager : MonoBehaviour
         {
             // ID 311: [Success (1 byte, bool)] + [RoomID (4 bytes, int)]
             bool success = reader.ReadBoolean();
-            int roomID = reader.ReadInt32();
+        int roomID = reader.ReadInt32();
 
             if (success)
-            {
-                Debug.Log($"방 입장 성공! RoomID: {roomID}. Room 씬으로 이동합니다.");
+        {
+            Debug.Log($"방 입장 성공! RoomID: {roomID}. Room 씬으로 이동합니다.");
                 Debug.Log($"[ProcessJoinRoomResponse] CreatedRoomID: {CreatedRoomID}, 입장할 RoomID: {roomID}");
+                Debug.Log($"[ProcessJoinRoomResponse] ConnectedUserID: {ConnectedUserID}, _myUniqueUserName: {_myUniqueUserName}");
                 
                 // 씬 전환 전에 방 ID 저장 (씬 전환 후 RoomManager에 전달하기 위해)
                 _pendingRoomID = roomID;
                 
+                // UserEnter Notify 플래그 리셋 (새 방에 입장하므로)
+                _hasReceivedUserEnter = false;
+                _firstUserEnterID = -1;
+                
                 // RoomScene으로 이동 (씬 인덱스 3)
-                UnityEngine.SceneManagement.SceneManager.LoadScene(3);
-            }
-            else
-            {
+            UnityEngine.SceneManagement.SceneManager.LoadScene(3);
+        }
+        else
+        {
                 Debug.LogError($"방 입장 실패! RoomID: {roomID}");
             }
         }
@@ -745,8 +912,8 @@ public class NetworkManager : MonoBehaviour
             Debug.Log($"[Ready Notify] UserID: {userID}, IsReady: {isReady}");
 
             // RoomManager에 Ready 상태 업데이트 전달
-            if (RoomManager.Instance != null)
-            {
+        if (RoomManager.Instance != null)
+        {
                 RoomManager.Instance.UpdatePlayerReadyStatus(userID, isReady);
             }
         }
@@ -782,6 +949,145 @@ public class NetworkManager : MonoBehaviour
 
             Debug.Log($"[ProcessGameStartNotify] 게임 시작 Notify (ID 331) 수신. FirstTurnUserID: {firstTurnUserID}. GameScene으로 이동합니다.");
 
+            // RoomManager에서 플레이어 목록 가져오기
+            if (RoomManager.Instance != null)
+            {
+                var playerList = RoomManager.Instance.GetPlayerList();
+                
+                // 플레이어 목록을 방장 우선으로 정렬
+                // CreatedRoomID를 가진 클라이언트가 방장이므로, 그 UserID를 가진 플레이어를 첫 번째로 이동
+                var sortedPlayerList = new List<PlayerReadyData>(playerList);
+                
+                // 방장 찾기: CreatedRoomID를 가진 클라이언트의 UserID가 방장
+                if (CreatedRoomID != -1 && ConnectedUserID != -1)
+                {
+                    // 내가 방장이므로, 내 UserID를 가진 플레이어를 첫 번째로 이동
+                    var hostPlayer = sortedPlayerList.Find(p => p.PlayerID == ConnectedUserID);
+                    if (hostPlayer != null)
+                    {
+                        sortedPlayerList.Remove(hostPlayer);
+                        sortedPlayerList.Insert(0, hostPlayer);
+                        Debug.Log($"[ProcessGameStartNotify] ✅ 방장 정렬 완료: UserID={hostPlayer.PlayerID}를 첫 번째로 이동");
+                    }
+            }
+            else
+            {
+                    // 일반 유저인 경우, 방장을 찾아서 첫 번째로 이동
+                    // 서버에서 방장 정보를 받지 못했으므로, 첫 번째 플레이어를 방장으로 가정
+                    Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ CreatedRoomID가 -1이므로 첫 번째 플레이어를 방장으로 가정");
+                }
+                
+                _gamePlayerList.Clear();
+                foreach (var player in sortedPlayerList)
+                {
+                    _gamePlayerList.Add(new PlayerInfo(player.PlayerID, player.PlayerName));
+                }
+                Debug.Log($"[ProcessGameStartNotify] 게임 시작 플레이어 목록: {_gamePlayerList.Count}명 (방장 우선 정렬 완료)");
+                Debug.Log($"[ProcessGameStartNotify] 현재 ConnectedUserID: {ConnectedUserID}, CreatedRoomID: {CreatedRoomID}");
+                
+                // 플레이어 목록 상세 로그 출력
+                Debug.Log($"[ProcessGameStartNotify] 플레이어 목록 상세 (정렬 후):");
+                for (int i = 0; i < sortedPlayerList.Count; i++)
+                {
+                    Debug.Log($"[ProcessGameStartNotify]   [{i}] PlayerID: {sortedPlayerList[i].PlayerID}, UserName: '{sortedPlayerList[i].PlayerName}'");
+                }
+                
+                // CreatedRoomID와 _myUniqueUserName, 그리고 서버가 보낸 FirstTurnUserID를 기반으로 올바른 ID를 결정
+                int correctUserID = -1;
+                
+                // 먼저 _myUniqueUserName을 사용하여 플레이어 목록에서 자신을 찾기 시도
+                // [핵심 수정] 정확한 전체 문자열 일치만 허용 (부분 문자열 비교 제거)
+                if (!string.IsNullOrEmpty(_myUniqueUserName))
+                {
+                    string trimmedMyUserName = _myUniqueUserName.Trim();
+                    foreach (var player in sortedPlayerList)
+                    {
+                        string trimmedPlayerName = player.PlayerName != null ? player.PlayerName.Trim() : "";
+                        // [수정] 정확히 일치하는 경우만 허용 (부분 문자열 비교 제거)
+                        if (trimmedPlayerName == trimmedMyUserName)
+                        {
+                            correctUserID = player.PlayerID;
+                            Debug.Log($"[ProcessGameStartNotify] ✅ _myUniqueUserName으로 자신을 찾음: UserID={correctUserID}, UserName='{player.PlayerName}' (정확한 일치)");
+                            break;
+                        }
+                        else
+                        {
+                            Debug.Log($"[ProcessGameStartNotify] UserName 불일치: '{trimmedPlayerName}' != '{trimmedMyUserName}' (부분 문자열 비교 제거로 인해 정확한 일치만 허용)");
+                        }
+                    }
+                }
+                
+                // _myUniqueUserName으로 찾지 못한 경우, CreatedRoomID와 FirstTurnUserID를 기반으로 결정
+                if (correctUserID == -1)
+                {
+                    // 이미 ConnectedUserID가 설정되어 있으면 그것을 사용 (ProcessUserEnterNotify에서 설정됨)
+                    if (ConnectedUserID != -1)
+                    {
+                        correctUserID = ConnectedUserID;
+                        Debug.Log($"[ProcessGameStartNotify] ConnectedUserID가 이미 설정되어 있으므로 사용: UserID={correctUserID}");
+                    }
+                    // ConnectedUserID가 설정되지 않은 경우, CreatedRoomID를 기반으로 결정
+                    else if (CreatedRoomID != -1)
+                    {
+                        // 방장인 경우: 첫 번째 플레이어를 자신의 것으로 설정
+                        if (sortedPlayerList.Count > 0)
+                        {
+                            correctUserID = sortedPlayerList[0].PlayerID;
+                            Debug.Log($"[ProcessGameStartNotify] 방장이므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, FirstTurnUserID={firstTurnUserID}");
+                        }
+                    }
+                    // 일반 유저인 경우: 두 번째 플레이어를 자신의 것으로 설정
+                    else if (sortedPlayerList.Count >= 2)
+                    {
+                        correctUserID = sortedPlayerList[1].PlayerID;
+                        Debug.Log($"[ProcessGameStartNotify] 일반 유저이므로 두 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, FirstTurnUserID={firstTurnUserID}");
+                    }
+                    // 플레이어가 1명만 있는 경우: 그 플레이어를 자신의 것으로 설정
+                    else if (sortedPlayerList.Count == 1)
+                    {
+                        correctUserID = sortedPlayerList[0].PlayerID;
+                        Debug.Log($"[ProcessGameStartNotify] 플레이어가 1명만 있으므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}");
+                    }
+                }
+                
+                // 올바른 ID가 결정되었고, 현재 ConnectedUserID와 다르면 수정
+                if (correctUserID != -1)
+                {
+                    if (ConnectedUserID != correctUserID)
+                    {
+                        Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ ConnectedUserID({ConnectedUserID})가 올바르지 않습니다. 올바른 ID({correctUserID})로 수정합니다.");
+                        ConnectedUserID = correctUserID;
+                        if (PlayerManager.Instance != null)
+                        {
+                            PlayerManager.Instance.SetMyPlayerID(correctUserID);
+                        }
+                        Debug.Log($"[ProcessGameStartNotify] ✅ ConnectedUserID를 올바른 값으로 수정: {correctUserID}");
+        }
+        else
+        {
+                        Debug.Log($"[ProcessGameStartNotify] ✅ ConnectedUserID가 이미 올바릅니다: {ConnectedUserID}");
+                    }
+                }
+                else if (ConnectedUserID == -1)
+                {
+                    // ConnectedUserID가 -1이고 올바른 ID를 찾지 못한 경우
+                    Debug.LogError($"[ProcessGameStartNotify] ❌ 플레이어 목록에서 자신을 찾지 못함. CreatedRoomID: {CreatedRoomID}, 플레이어 수: {playerList.Count}");
+                    Debug.LogError($"[ProcessGameStartNotify] 플레이어 목록:");
+                    foreach (var player in playerList)
+                    {
+                        Debug.LogError($"[ProcessGameStartNotify]   - UserID: {player.PlayerID}, UserName: '{player.PlayerName}'");
+                    }
+                }
+            }
+
+            // 첫 턴 플레이어 설정
+            _currentTurnPlayerID = firstTurnUserID;
+            Debug.Log($"[ProcessGameStartNotify] _currentTurnPlayerID 설정: {_currentTurnPlayerID}");
+            Debug.Log($"[ProcessGameStartNotify] ⚠️ 서버로부터 ID 430 (Turn Start Notify) 수신 대기 중...");
+
+            // 첫 턴 플레이어에게 컨트롤 권한 부여 (씬 로드 후 GameManager에서 처리)
+            // 여기서는 씬 전환만 수행
+
             // RoomManager의 플래그 리셋 (씬 전환 전)
             if (RoomManager.Instance != null)
             {
@@ -806,7 +1112,106 @@ public class NetworkManager : MonoBehaviour
             int userID = reader.ReadInt32();
             string userName = reader.ReadUserName(20);
 
-            Debug.Log($"[UserEnter Notify] UserID: {userID}, UserName: {userName}");
+            Debug.Log($"[UserEnter Notify] UserID: {userID}, UserName: '{userName}', ConnectedUserName: '{ConnectedUserName}', _myUniqueUserName: '{_myUniqueUserName}'");
+
+            // 자신의 UserID인 경우 ConnectedUserID 설정
+            // userName이 _myUniqueUserName과 정확히 일치하는 경우 자신의 UserID로 설정
+            bool isMyUser = false;
+            
+            // userName을 trim하여 비교 (서버에서 공백이 포함될 수 있음)
+            string trimmedUserName = userName != null ? userName.Trim() : "";
+            string trimmedMyUserName = _myUniqueUserName != null ? _myUniqueUserName.Trim() : "";
+            
+            // [핵심 수정] 정확한 전체 문자열 일치만 허용 (부분 문자열 비교 제거)
+            // 부분 문자열 비교는 다른 플레이어의 UserID를 자신의 것으로 잘못 설정하는 버그를 유발할 수 있음
+            bool userNameMatches = false;
+            if (!string.IsNullOrEmpty(trimmedMyUserName) && !string.IsNullOrEmpty(trimmedUserName))
+            {
+                // [수정] 정확히 일치하는 경우만 허용 (부분 문자열 비교 제거)
+                if (trimmedUserName == trimmedMyUserName)
+                {
+                    userNameMatches = true;
+                    Debug.Log($"[UserEnter Notify] ✅ 정확한 UserName 일치 확인: '{trimmedUserName}' == '{trimmedMyUserName}'");
+                }
+                else
+                {
+                    Debug.Log($"[UserEnter Notify] ❌ UserName 불일치: '{trimmedUserName}' != '{trimmedMyUserName}' (부분 문자열 비교 제거로 인해 정확한 일치만 허용)");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[UserEnter Notify] ⚠️ UserName이 null이거나 비어있음. trimmedUserName='{trimmedUserName}', trimmedMyUserName='{trimmedMyUserName}'");
+            }
+            
+            if (userNameMatches)
+            {
+                // userName이 일치하는 경우 자신의 UserID로 설정
+                // 단, 이미 ConnectedUserID가 설정되어 있고 다른 값이면 덮어쓰지 않음 (중복 방지)
+                if (ConnectedUserID == -1 || ConnectedUserID == userID)
+                {
+                    ConnectedUserID = userID;
+                    isMyUser = true;
+                    Debug.Log($"[UserEnter Notify] ✅ 내 UserID로 설정: {userID}, UserName: '{userName}' (일치: {userNameMatches})");
+                }
+                else
+                {
+                    Debug.LogWarning($"[UserEnter Notify] ⚠️ 이미 ConnectedUserID가 설정됨 ({ConnectedUserID}). 새로운 UserID ({userID})를 무시합니다.");
+                }
+            }
+            else if (ConnectedUserID == -1)
+            {
+                // 아직 자신의 UserID를 모르는 경우
+                // CreatedRoomID를 확인하여 방장인지 판단
+                // 방장이면 첫 번째로 받은 UserEnter Notify를 자신의 것으로 설정
+                // 일반 유저면 첫 번째 UserEnter ID만 저장하고, ProcessGameStartNotify에서 확정
+                if (!_hasReceivedUserEnter)
+                {
+                    _firstUserEnterID = userID;
+                    _hasReceivedUserEnter = true;
+                    
+                    // 방장인 경우에만 즉시 설정 (CreatedRoomID가 설정되어 있으면 방장)
+                    if (CreatedRoomID != -1)
+                    {
+                        ConnectedUserID = userID;
+                        isMyUser = true;
+                        Debug.Log($"[UserEnter Notify] ✅ 방장이므로 첫 번째 UserEnter Notify를 자신의 것으로 설정: UserID={userID}, UserName='{userName}'");
+                    }
+                    else
+                    {
+                        Debug.Log($"[UserEnter Notify] 첫 번째 UserEnter Notify 수신: UserID={userID}, UserName='{userName}' (일반 유저이므로 ProcessGameStartNotify에서 확정)");
+                    }
+                }
+                else
+                {
+                    // 이미 첫 번째 UserEnter를 받았다면, RoomManager의 플레이어 목록을 확인
+                    bool foundInRoomManager = false;
+                    if (RoomManager.Instance != null)
+                    {
+                        var playerList = RoomManager.Instance.GetPlayerList();
+                        // 방장이고, RoomManager에 플레이어가 1명만 있고, 그 플레이어의 ID가 _firstUserEnterID와 일치하면 자신
+                        if (CreatedRoomID != -1 && playerList.Count == 1 && playerList[0].PlayerID == _firstUserEnterID)
+                        {
+                            ConnectedUserID = _firstUserEnterID;
+                            isMyUser = true;
+                            foundInRoomManager = true;
+                            Debug.Log($"[UserEnter Notify] ✅ RoomManager에서 자신을 찾음 (방장, 첫 UserEnter ID 사용): UserID={_firstUserEnterID}");
+                        }
+                    }
+                    
+                    if (!foundInRoomManager)
+                    {
+                        Debug.LogWarning($"[UserEnter Notify] ⚠️ 자신을 찾지 못함. UserID: {userID}, UserName: '{userName}', _myUniqueUserName: '{_myUniqueUserName}'. ProcessGameStartNotify에서 다시 시도합니다.");
+                    }
+                }
+            }
+            
+            if (isMyUser && PlayerManager.Instance != null)
+            {
+                PlayerManager.Instance.SetMyPlayerID(userID);
+                Debug.Log($"[UserEnter Notify] MyPlayerID 설정 완료: {userID}");
+                // 기존 플레이어들의 isLocalPlayer 상태 업데이트
+                PlayerManager.Instance.UpdatePlayerLocalStatus();
+            }
 
             // RoomManager에 사용자 입장 알림 전달
             if (RoomManager.Instance != null)
@@ -862,6 +1267,267 @@ public class NetworkManager : MonoBehaviour
         catch (Exception ex)
         {
             Debug.LogError($"[ProcessUserLeftNotify] UserLeft Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    public int GetCurrentTurnPlayerID()
+    {
+        return _currentTurnPlayerID;
+    }
+
+    public bool IsMyTurn()
+    {
+        return _currentTurnPlayerID == ConnectedUserID;
+    }
+
+    private void ProcessTurnStartNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 430: [NextPlayerID (4 bytes, int)] + [TurnTimeLimitSec (4 bytes, int)]
+            int nextPlayerID = reader.ReadInt32();
+            int turnTimeLimitSec = reader.ReadInt32();
+
+            Debug.Log($"[Turn Start Notify] ✅✅✅✅✅ ID 430 수신! 턴 전환! NextPlayerID: {nextPlayerID}, TurnTimeLimitSec: {turnTimeLimitSec}, 내 UserID: {ConnectedUserID}");
+            Debug.Log($"[Turn Start Notify] 이전 턴 플레이어: {_currentTurnPlayerID}, 새로운 턴 플레이어: {nextPlayerID}");
+
+            // [핵심 수정] 중복 패킷 방지: 같은 nextPlayerID를 가진 패킷을 연속으로 받으면 무시
+            if (_currentTurnPlayerID == nextPlayerID && _currentTurnPlayerID != -1)
+            {
+                Debug.LogWarning($"[Turn Start Notify] ⚠️ 중복 패킷 감지! 이미 현재 턴 플레이어({_currentTurnPlayerID})인데 동일한 패킷을 다시 수신했습니다. 무시합니다.");
+                return;
+            }
+
+            // [핵심 수정] _currentTurnPlayerID를 먼저 업데이트하여, ApplyTurnControlToAllPlayers에서 
+            // GetCurrentTurnPlayerID()를 호출할 때 올바른 값을 반환하도록 보장
+            _currentTurnPlayerID = nextPlayerID;
+
+            // PlayerController에 턴 정보 전달
+            // 플레이어가 아직 생성되지 않았을 수 있으므로, 생성된 경우에만 처리
+            if (PlayerManager.Instance != null)
+            {
+                // PlayerManager에서 모든 플레이어를 가져와서 처리 (더 안전함)
+                var allPlayers = PlayerManager.Instance.GetAllPlayers();
+                Debug.Log($"[Turn Start Notify] PlayerManager에서 {allPlayers.Count}명의 플레이어를 찾았습니다. NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}");
+                
+                // 디버깅: 모든 플레이어 ID 출력
+                Debug.Log($"[Turn Start Notify] 현재 PlayerManager의 플레이어 목록:");
+                foreach (var kvp in allPlayers)
+                {
+                    Debug.Log($"[Turn Start Notify]   - PlayerID: {kvp.Key}, GameObject: {kvp.Value?.name ?? "null"}");
+                }
+                
+                // 플레이어가 생성되어 있으면 즉시 처리
+                if (allPlayers.Count > 0)
+                {
+                    ApplyTurnControlToAllPlayers(nextPlayerID, turnTimeLimitSec);
+                }
+                else
+                {
+                    Debug.LogWarning($"[Turn Start Notify] ⚠️ 플레이어가 아직 생성되지 않았습니다. GameManager.StartGameLogic() 완료 후 턴 정보가 적용됩니다.");
+                }
+            }
+            else
+            {
+                Debug.LogError($"[Turn Start Notify] ⚠️⚠️⚠️ PlayerManager.Instance가 null입니다!");
+            }
+
+            // GameUI 업데이트
+            if (GameUI.Instance != null)
+            {
+                GameUI.Instance.UpdateTurnInfo();
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessTurnStartNotify] Turn Start Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+    
+    // 턴 정보를 모든 플레이어에게 적용하는 메서드 (재사용 가능)
+    private void ApplyTurnControlToAllPlayers(int nextPlayerID, int turnTimeLimitSec)
+    {
+        if (PlayerManager.Instance == null)
+        {
+            Debug.LogWarning($"[ApplyTurnControlToAllPlayers] PlayerManager.Instance가 null입니다!");
+            return;
+        }
+        
+        var allPlayers = PlayerManager.Instance.GetAllPlayers();
+        Debug.Log($"[ApplyTurnControlToAllPlayers] {allPlayers.Count}명의 플레이어에게 턴 정보 적용. NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}");
+        
+        // 디버깅: nextPlayerID가 PlayerManager에 있는지 확인
+        bool foundNextPlayer = allPlayers.ContainsKey(nextPlayerID);
+        Debug.Log($"[ApplyTurnControlToAllPlayers] NextPlayerID {nextPlayerID}가 PlayerManager에 존재하는가? {foundNextPlayer}");
+        
+        if (!foundNextPlayer)
+        {
+            Debug.LogError($"[ApplyTurnControlToAllPlayers] ⚠️⚠️⚠️ NextPlayerID {nextPlayerID}가 PlayerManager에 없습니다! 현재 플레이어 목록:");
+            foreach (var kvp in allPlayers)
+            {
+                Debug.LogError($"[ApplyTurnControlToAllPlayers]   - PlayerID: {kvp.Key}, GameObject: {kvp.Value?.name ?? "null"}");
+            }
+        }
+        
+        // 모든 플레이어에게 턴 정보 업데이트
+        foreach (var kvp in allPlayers)
+        {
+            int playerID = kvp.Key;
+            GameObject playerObj = kvp.Value;
+            
+            if (playerObj != null)
+            {
+                var controller = playerObj.GetComponent<PlayerController>();
+                if (controller != null)
+                {
+                    // nextPlayerID는 서버에서 보낸 FD이므로, 이것이 UserID와 일치해야 함
+                    // 로컬 플레이어이고, 현재 턴이 로컬 플레이어의 턴이면 컨트롤 가능
+                    bool isLocalPlayer = (playerID == ConnectedUserID);
+                    bool isCurrentTurn = (playerID == nextPlayerID);
+                    bool canControl = isLocalPlayer && isCurrentTurn;
+                    
+                    Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
+                    
+                    // 모든 플레이어에게 SetCanControl 호출 (로컬 플레이어이고 현재 턴이면 true, 아니면 false)
+                    controller.SetCanControl(canControl);
+                    
+                    // 턴이 시작된 플레이어에게 OnTurnStart 호출
+                    if (isCurrentTurn)
+                    {
+                        Debug.Log($"[ApplyTurnControlToAllPlayers] ✅ PlayerID {playerID}의 턴 시작! OnTurnStart 호출, canControl: {canControl}");
+                        controller.OnTurnStart(turnTimeLimitSec);
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[ApplyTurnControlToAllPlayers] PlayerID {playerID}의 PlayerController를 찾을 수 없습니다.");
+                }
+            }
+        }
+    }
+    
+    // GameManager가 플레이어 생성 완료 후 호출하는 메서드
+    public void ApplyPendingTurnControl()
+    {
+        if (_currentTurnPlayerID != -1)
+        {
+            Debug.Log($"[ApplyPendingTurnControl] 보류된 턴 정보 적용. CurrentTurnPlayerID: {_currentTurnPlayerID}");
+            ApplyTurnControlToAllPlayers(_currentTurnPlayerID, 30); // 기본 턴 시간 30초
+        }
+    }
+
+    private void ProcessPlayerMoveNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 400: [PlayerID (4 bytes, int)] + [Position (12 bytes, 3 floats)] + [Rotation (16 bytes, 4 floats)]
+            int playerID = reader.ReadInt32();
+            Vector3 position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+            Quaternion rotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+
+            bool isLocalPlayer = (playerID == ConnectedUserID);
+            Debug.Log($"[PlayerMove Notify] ✅ 이동 동기화 수신! PlayerID: {playerID}, Pos: {position}, 내 UserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}");
+
+            // 로컬 플레이어는 자신의 이동을 네트워크로부터 받지 않음 (직접 입력으로 제어)
+            // ConnectedUserID가 -1이거나 아직 설정되지 않은 경우도 체크
+            if (isLocalPlayer || (ConnectedUserID == -1 && PlayerManager.Instance != null && playerID == PlayerManager.Instance.MyPlayerID))
+            {
+                Debug.Log($"[PlayerMove Notify] ⚠️ 로컬 플레이어({playerID})의 이동 알림을 무시합니다. 직접 입력으로 제어됩니다.");
+                return;
+            }
+
+            if (PlayerManager.Instance != null)
+            {
+                PlayerManager.Instance.UpdatePlayerPosition(playerID, position, rotation);
+            }
+            else
+            {
+                Debug.LogWarning($"[PlayerMove Notify] ⚠️ PlayerManager.Instance가 null입니다!");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessPlayerMoveNotify] PlayerMove Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    private void ProcessPlayerAimNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 410: [PlayerID (4 bytes, int)] + [AimAngle (4 bytes, float)]
+            int playerID = reader.ReadInt32();
+            float aimAngle = reader.ReadFloat();
+
+            Debug.Log($"[PlayerAim Notify] PlayerID: {playerID}, AimAngle: {aimAngle}");
+
+            // TODO: PlayerController에 AimAngle 전달
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessPlayerAimNotify] PlayerAim Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    private void ProcessPlayerFireNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 420: [PlayerID (4 bytes, int)] + [FirePoint (12 bytes, 3 floats)] + [FireRotation (16 bytes, 4 floats)]
+            int playerID = reader.ReadInt32();
+            Vector3 firePoint = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+            Quaternion fireRotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
+
+            bool isLocalPlayer = (playerID == ConnectedUserID);
+            Debug.Log($"[PlayerFire Notify] ✅✅✅✅✅ ID 420 수신! PlayerID: {playerID}, FirePoint: {firePoint}, FireRotation: {fireRotation}");
+            Debug.Log($"[PlayerFire Notify] 내 UserID: {ConnectedUserID}, MyPlayerID: {(PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1)}, isLocalPlayer: {isLocalPlayer}");
+
+            // 로컬 플레이어는 자신의 발사를 네트워크로부터 받지 않음 (직접 입력으로 제어)
+            // ConnectedUserID가 -1이거나 아직 설정되지 않은 경우도 체크
+            if (isLocalPlayer || (ConnectedUserID == -1 && PlayerManager.Instance != null && playerID == PlayerManager.Instance.MyPlayerID))
+            {
+                Debug.Log($"[PlayerFire Notify] ⚠️ 로컬 플레이어({playerID})의 발사 알림을 무시합니다. 직접 입력으로 제어됩니다.");
+                return;
+            }
+
+            Debug.Log($"[PlayerFire Notify] ⚠️⚠️⚠️ 포탄 생성 시작! PlayerID {playerID}의 Fire() 호출 예정 (동기화된 위치/회전 사용)");
+
+            if (PlayerManager.Instance != null)
+            {
+                var playerObj = PlayerManager.Instance.GetPlayerById(playerID);
+                if (playerObj != null)
+                {
+                    var controller = playerObj.GetComponent<PlayerController>();
+                    if (controller != null)
+                    {
+                        Debug.Log($"[PlayerFire Notify] ✅ ID {playerID}의 탱크에 발사 명령 전달 시작 (동기화된 위치/회전 사용)");
+                        // 동기화된 firePoint와 fireRotation을 사용하여 발사
+                        controller.Fire(firePoint, fireRotation);
+                        Debug.Log($"[PlayerFire Notify] ✅ ID {playerID}의 탱크에 발사 명령 전달 완료");
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[PlayerFire Notify] ❌ ID {playerID}의 PlayerController를 찾을 수 없습니다.");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[PlayerFire Notify] ❌ ID {playerID}에 해당하는 플레이어를 찾을 수 없습니다.");
+                    Debug.LogWarning($"[PlayerFire Notify] 현재 _gamePlayerList:");
+                    foreach (var playerInfo in _gamePlayerList)
+                    {
+                        Debug.LogWarning($"[PlayerFire Notify]   - UserID: {playerInfo.UserID}, UserName: {playerInfo.UserName}");
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[PlayerFire Notify] ❌ PlayerManager.Instance가 null입니다.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessPlayerFireNotify] PlayerFire Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
         }
     }
 
@@ -1121,10 +1787,72 @@ public class NetworkManager : MonoBehaviour
 
     public void SendMoveRequest(Vector3 position, Quaternion rotation)
     {
+        // 자기 턴일 때만 이동 패킷 전송
+        if (!IsMyTurn())
+        {
+            Debug.LogWarning("[SendMoveRequest] 자기 턴이 아니므로 이동 패킷을 전송하지 않습니다.");
+            return;
+        }
+
         byte[] movePacket = MakeMoveRequestPacket(position, rotation);
+        
+        // 패킷 구조 확인용 로그 (첫 번째 전송 시에만)
+        if (Time.frameCount % 60 == 0) // 1초마다 한 번씩만
+        {
+            Debug.Log($"[SendMoveRequest] ID 500 패킷 구조 확인 - 총 길이: {movePacket.Length}바이트, PlayerID: {PlayerManager.Instance.MyPlayerID}, Pos: {position}");
+            Debug.Log($"[SendMoveRequest] 패킷 헤더: [0-1] Length={BitConverter.ToUInt16(movePacket, 0)}, [2-3] ID={BitConverter.ToUInt16(movePacket, 2)}");
+        }
+        
         SendPacket(movePacket);
         // 주석 처리: 이동 요청은 초당 여러 번 발생하므로, 로그를 너무 자주 출력하면 성능에 영향
-        Debug.Log($"ID 500 (Move Req) 패킷이 M3 서버로 전송되었습니다. Pos: {position}");
+        // Debug.Log($"ID 500 (Move Req) 패킷이 M3 서버로 전송되었습니다. Pos: {position}");
+    }
+
+    // Fire 요청 (ID 600)
+    public byte[] MakeFireRequestPacket(Vector3 firePoint, Quaternion fireRotation)
+    {
+        const ushort MESSAGE_ID = 600;
+        // Header(4) + ID(4) + FirePoint(12) + FireRotation(16) = 총 36바이트
+        const ushort TOTAL_LENGTH = 36;
+
+        PacketBuilder builder = new PacketBuilder();
+        builder.WriteHeader(MESSAGE_ID, TOTAL_LENGTH);
+        builder.WriteInt32(PlayerManager.Instance.MyPlayerID); // ID 포함
+
+        builder.WriteFloat(firePoint.x);
+        builder.WriteFloat(firePoint.y);
+        builder.WriteFloat(firePoint.z);
+
+        builder.WriteFloat(fireRotation.x);
+        builder.WriteFloat(fireRotation.y);
+        builder.WriteFloat(fireRotation.z);
+        builder.WriteFloat(fireRotation.w);
+
+        return builder.GetPacket();
+    }
+
+    public void SendFireRequest(Vector3 firePoint, Quaternion fireRotation)
+    {
+        // 자기 턴일 때만 발사 패킷 전송
+        if (!IsMyTurn())
+        {
+            Debug.LogWarning("[SendFireRequest] 자기 턴이 아니므로 발사 패킷을 전송하지 않습니다.");
+            return;
+        }
+
+        byte[] firePacket = MakeFireRequestPacket(firePoint, fireRotation);
+        
+        // 패킷 구조 확인용 로그
+        Debug.Log($"[SendFireRequest] ========== ID 600 패킷 전송 시작 ==========");
+        Debug.Log($"[SendFireRequest] 패킷 구조 - 총 길이: {firePacket.Length}바이트, PlayerID: {PlayerManager.Instance.MyPlayerID}, FirePoint: {firePoint}");
+        Debug.Log($"[SendFireRequest] 패킷 헤더: [0-1] Length={BitConverter.ToUInt16(firePacket, 0)}, [2-3] ID={BitConverter.ToUInt16(firePacket, 2)}");
+        
+        // SendPacket 메서드를 사용하여 전송 (이 메서드는 연결 상태 확인과 예외 처리를 포함함)
+        Debug.Log($"[SendFireRequest] SendPacket 메서드를 통해 전송 시작...");
+        SendPacket(firePacket);
+        Debug.Log($"[SendFireRequest] ✅✅✅ ID 600 패킷 전송 완료! (SendPacket 호출됨)");
+        Debug.Log($"[SendFireRequest] ⚠️⚠️⚠️ 서버로부터 ID 420 (PlayerFire Notify), ID 421 (Fire Result Notify), ID 422 (Death Notify), ID 430 (Turn Start Notify) 패킷 수신 대기 중...");
+        Debug.Log($"[SendFireRequest] ⚠️⚠️⚠️ 만약 ID 420이 수신되지 않으면 서버가 ID 600을 받지 못했거나 ID 420을 방송하지 않는 것입니다!");
     }
     private void ProcessPlayerMoveResponse(PacketReader reader)
     {
@@ -1236,6 +1964,161 @@ public class NetworkManager : MonoBehaviour
         else
         {
             Debug.LogError($"[ID 701 에러] ID {targetID}에 해당하는 플레이어를 찾을 수 없습니다!");
+        }
+    }
+
+    private void ProcessFireResultNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 421: [ShooterID (4 bytes, int)] + [VictimID (4 bytes, int)] + [Damage (4 bytes, int)] + [VictimNewHP (4 bytes, int)]
+            int shooterID = reader.ReadInt32();
+            int victimID = reader.ReadInt32();
+            int damage = reader.ReadInt32();
+            int victimNewHP = reader.ReadInt32();
+
+            Debug.Log($"[Fire Result Notify] ✅✅✅✅✅ ID 421 수신! Shooter: {shooterID}, Victim: {victimID}, Damage: {damage}, NewHP: {victimNewHP}");
+            Debug.Log($"[Fire Result Notify] 내 UserID: {ConnectedUserID}, MyPlayerID: {(PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1)}");
+            Debug.Log($"[Fire Result Notify] ⚠️⚠️⚠️ 체력바 업데이트 시작! VictimID {victimID}에게 {damage} 데미지 적용 예정");
+
+            // 피해자에게 데미지 적용
+            if (PlayerManager.Instance != null)
+            {
+                // victimID는 서버에서 보낸 FD이므로, 이것이 UserID와 일치해야 함
+                var victimObj = PlayerManager.Instance.GetPlayerById(victimID);
+                if (victimObj != null)
+                {
+                    var controller = victimObj.GetComponent<PlayerController>();
+                    if (controller != null)
+                    {
+                        // 서버에서 보낸 NewHP로 직접 설정 (중복 처리 방지)
+                        float currentHP = controller.currentHealth;
+                        if (Mathf.Abs(currentHP - victimNewHP) > 0.1f)
+                        {
+                            Debug.Log($"[Fire Result] ID {victimID}에게 {damage} 데미지 적용 시작 (현재 HP: {currentHP}, 서버 NewHP: {victimNewHP})");
+                            // 서버의 NewHP로 직접 설정
+                            controller.currentHealth = victimNewHP;
+                            if (controller.hpBarSlider != null)
+                            {
+                                controller.hpBarSlider.value = victimNewHP / 100f;
+                            }
+                            Debug.Log($"[Fire Result] ID {victimID}에게 데미지 적용 완료. 남은 HP: {victimNewHP} (실제 HP: {controller.currentHealth})");
+                        }
+                        else
+                        {
+                            Debug.Log($"[Fire Result] ID {victimID}의 HP가 이미 {victimNewHP}로 동기화되어 있습니다. 중복 처리 건너뜀.");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[Fire Result] ID {victimID}의 PlayerController를 찾을 수 없습니다.");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[Fire Result] ID {victimID}에 해당하는 플레이어를 찾을 수 없습니다.");
+                    // _gamePlayerList에서 victimID 찾기 시도
+                    bool foundInList = false;
+                    foreach (var playerInfo in _gamePlayerList)
+                    {
+                        if (playerInfo.UserID == victimID)
+                        {
+                            Debug.LogWarning($"[Fire Result] _gamePlayerList에서 찾음: UserID={playerInfo.UserID}, UserName={playerInfo.UserName}");
+                            foundInList = true;
+                            break;
+                        }
+                    }
+                    if (!foundInList)
+                    {
+                        Debug.LogWarning($"[Fire Result] _gamePlayerList에도 victimID {victimID}가 없습니다.");
+                    }
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[Fire Result] PlayerManager.Instance가 null입니다.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessFireResultNotify] Fire Result Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    private void ProcessPlayerDeathNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 422: [VictimID (4 bytes, int)] + [KillerID (4 bytes, int)]
+            int victimID = reader.ReadInt32();
+            int killerID = reader.ReadInt32();
+
+            Debug.Log($"[Player Death Notify] ✅✅✅ ID 422 수신! Victim: {victimID}, Killer: {killerID}");
+            Debug.Log($"[Player Death Notify] 내 UserID: {ConnectedUserID}, MyPlayerID: {(PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1)}");
+
+            // 사망한 플레이어 처리
+            if (PlayerManager.Instance != null)
+            {
+                var victimObj = PlayerManager.Instance.GetPlayerById(victimID);
+                if (victimObj != null)
+                {
+                    var controller = victimObj.GetComponent<PlayerController>();
+                    if (controller != null)
+                    {
+                        // 사망 처리 (HP를 0으로 만들어 Die() 호출)
+                        if (!controller.isDead)
+                        {
+                            Debug.Log($"[Player Death] ID {victimID} 사망 처리 시작 (TakeDamage 호출)");
+                            controller.TakeDamage(9999f);
+                            Debug.Log($"[Player Death] ID {victimID} 사망 처리 완료 (gameObject.SetActive(false) 호출됨)");
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[Player Death] ID {victimID}는 이미 사망 상태입니다.");
+                        }
+                    }
+                    else
+                    {
+                        Debug.LogWarning($"[Player Death] ID {victimID}의 PlayerController를 찾을 수 없습니다.");
+                    }
+                }
+                else
+                {
+                    Debug.LogWarning($"[Player Death] ID {victimID}에 해당하는 플레이어를 찾을 수 없습니다.");
+                }
+            }
+            else
+            {
+                Debug.LogWarning($"[Player Death] PlayerManager.Instance가 null입니다.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessPlayerDeathNotify] Player Death Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
+        }
+    }
+
+    private void ProcessGameEndNotify(PacketReader reader)
+    {
+        try
+        {
+            // ID 440: [WinnerID (4 bytes, int)]
+            int winnerID = reader.ReadInt32();
+
+            Debug.Log($"[Game End Notify] ID 440 수신 - Winner: {winnerID}");
+
+            // 게임 종료 UI 표시 등 처리
+            if (GameUI.Instance != null)
+            {
+                // GameUI에 승자 정보 표시 (GameUI에 메서드가 있다면)
+                Debug.Log($"[Game End] 게임 종료! 승자: ID {winnerID}");
+            }
+
+            // TODO: 게임 종료 후 로비로 돌아가거나 결과 화면 표시
+        }
+        catch (Exception ex)
+        {
+            Debug.LogError($"[ProcessGameEndNotify] Game End Notify 처리 중 오류: {ex.Message}\n{ex.StackTrace}");
         }
     }
 }
