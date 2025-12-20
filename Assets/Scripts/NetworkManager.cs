@@ -2000,7 +2000,9 @@ public class NetworkManager : MonoBehaviour
                             controller.currentHealth = victimNewHP;
                             if (controller.hpBarSlider != null)
                             {
-                                controller.hpBarSlider.value = victimNewHP / 100f;
+                                // [수정] hpBarSlider.maxValue가 100이므로, value는 0~100 사이의 값이어야 함
+                                // victimNewHP는 이미 0~100 사이의 값이므로 그대로 사용
+                                controller.hpBarSlider.value = victimNewHP;
                             }
                             Debug.Log($"[Fire Result] ID {victimID}에게 데미지 적용 완료. 남은 HP: {victimNewHP} (실제 HP: {controller.currentHealth})");
                         }
