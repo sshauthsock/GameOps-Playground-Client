@@ -26,7 +26,8 @@ public class NetworkManager : MonoBehaviour
     public int ConnectedUserID { get; set; } = -1; // 로그인한 사용자 ID (서버에서 받은 UserID) - set을 public으로 변경하여 GameManager에서 설정 가능
     public string _myUniqueUserName; // 각 클라이언트마다 고유한 userName (public으로 변경하여 GameManager에서 접근 가능)
     public int CreatedRoomID { get; private set; } = -1; // 생성한 방 ID (방장 추적용)
-    private int _pendingRoomID = -1; // 씬 전환 중인 방 ID (RoomManager 설정용)
+    public int PendingRoomID { get; private set; } = -1; // 씬 전환 중인 방 ID (RoomManager 설정용)
+    public string PendingRoomName { get; private set; } = null; // 씬 전환 중인 방 이름 (RoomManager 설정용)
     private int _currentTurnPlayerID = -1; // 현재 턴 플레이어 ID
     public List<PlayerInfo> _gamePlayerList = new List<PlayerInfo>(); // 게임 시작 시 플레이어 목록
     private int _firstUserEnterID = -1; // 첫 번째 UserEnter Notify에서 받은 UserID (임시 식별용)
@@ -130,10 +131,10 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.Log($"씬 로드 완료: {scene.name} (Build Index: {scene.buildIndex})");
             // RoomScene 로드 시 RoomManager가 준비될 때까지 대기한 후 방 ID 설정
-            if (_pendingRoomID != -1)
+            if (PendingRoomID != -1)
             {
-                StartCoroutine(WaitForRoomManagerAndSetRoomID(_pendingRoomID));
-                _pendingRoomID = -1; // 사용 후 리셋
+                StartCoroutine(WaitForRoomManagerAndSetRoomID(PendingRoomID));
+                PendingRoomID = -1; // 사용 후 리셋
             }
         }
     }
@@ -157,6 +158,13 @@ public class NetworkManager : MonoBehaviour
 
         Debug.Log($"[NetworkManager] RoomManager 준비 완료. 방 ID 설정: {roomID}, CreatedRoomID: {CreatedRoomID}");
         RoomManager.Instance.SetCurrentRoomID(roomID);
+        
+        // 방 이름이 있으면 설정
+        if (!string.IsNullOrEmpty(PendingRoomName))
+        {
+            RoomManager.Instance.UpdateRoomInfo(roomID, PendingRoomName, 0, 5);
+            PendingRoomName = null; // 사용 후 리셋
+        }
     }
 
     private IEnumerator WaitForLobbyManagerAndRequestRoomList()
@@ -665,6 +673,10 @@ public class NetworkManager : MonoBehaviour
             CreatedRoomID = roomID;
             Debug.Log($"[ProcessCreateRoomResponse] CreatedRoomID 설정 완료: {CreatedRoomID}");
             
+            // 방 생성 시 방장 자신을 플레이어 목록에 추가 (UserEnter Notify를 받기 전에 미리 추가)
+            // RoomManager가 아직 초기화되지 않았을 수 있으므로 씬 전환 후 처리
+            PendingRoomID = roomID;
+            
             // 방 생성 성공 시 자동으로 방에 입장
             SendJoinRoomRequest(roomID);
             
@@ -878,7 +890,7 @@ public class NetworkManager : MonoBehaviour
                 Debug.Log($"[ProcessJoinRoomResponse] ConnectedUserID: {ConnectedUserID}, _myUniqueUserName: {_myUniqueUserName}");
                 
                 // 씬 전환 전에 방 ID 저장 (씬 전환 후 RoomManager에 전달하기 위해)
-                _pendingRoomID = roomID;
+                PendingRoomID = roomID;
                 
                 // UserEnter Notify 플래그 리셋 (새 방에 입장하므로)
                 _hasReceivedUserEnter = false;
@@ -1217,6 +1229,38 @@ public class NetworkManager : MonoBehaviour
             if (RoomManager.Instance != null)
             {
                 RoomManager.Instance.OnUserEntered(userID, userName);
+                
+                // 방 정보가 없으면 기본값으로 설정
+                if (RoomManager.Instance.CurrentRoomID == -1 && PendingRoomID != -1)
+                {
+                    RoomManager.Instance.SetCurrentRoomID(PendingRoomID);
+                    // 방 이름이 없으면 기본값 사용 (실제 방 이름은 서버에서 받아야 함)
+                    string defaultRoomName = $"Room #{PendingRoomID}";
+                    RoomManager.Instance.UpdateRoomInfo(PendingRoomID, defaultRoomName, 0, 5);
+                }
+            }
+            
+            // 방장이 방을 생성한 경우, 자신의 UserEnter Notify를 받지 못할 수 있으므로
+            // 방장 자신을 플레이어 목록에 추가
+            if (CreatedRoomID != -1 && isMyUser && RoomManager.Instance != null)
+            {
+                // 이미 추가되어 있는지 확인
+                var playerList = RoomManager.Instance.GetPlayerList();
+                bool alreadyExists = false;
+                foreach (var player in playerList)
+                {
+                    if (player.PlayerID == userID)
+                    {
+                        alreadyExists = true;
+                        break;
+                    }
+                }
+                
+                if (!alreadyExists)
+                {
+                    Debug.Log($"[ProcessUserEnterNotify] 방장 자신을 플레이어 목록에 추가: UserID={userID}, UserName={userName}");
+                    RoomManager.Instance.OnUserEntered(userID, userName);
+                }
             }
         }
         catch (Exception ex)
@@ -1655,6 +1699,9 @@ public class NetworkManager : MonoBehaviour
 
     public void SendCreateRoomRequest(string roomName)
     {
+        // 방 이름 저장 (나중에 RoomManager에 전달하기 위해)
+        PendingRoomName = roomName;
+        
         byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
         SendPacket(createPacket);
         Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");

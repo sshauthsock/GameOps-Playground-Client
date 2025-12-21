@@ -11,6 +11,10 @@ public class RoomManager : MonoBehaviour
     private string _currentRoomName;
     private int _currentPlayerCount;
     private int _maxPlayers;
+    
+    // 접근자 프로퍼티
+    public int CurrentRoomID => _currentRoomID;
+    public string CurrentRoomName => _currentRoomName;
     private List<PlayerReadyData> _playerList = new List<PlayerReadyData>();
     private bool _isLocalPlayerReady = false;
     private bool _hasSentGameStartRequest = false; // 게임 시작 요청을 이미 보냈는지 확인
@@ -61,6 +65,70 @@ public class RoomManager : MonoBehaviour
             {
                 // 더미 방 정보 주입
                 StartCoroutine(DelayedDummyData());
+            }
+            else
+            {
+                // 실제 모드: 방 정보 요청 또는 기존 정보 사용
+                StartCoroutine(InitializeRoomInfo());
+            }
+        }
+    }
+
+    private System.Collections.IEnumerator InitializeRoomInfo()
+    {
+        // RoomManager가 초기화될 때까지 대기
+        yield return new WaitForSeconds(0.2f);
+        
+        if (NetworkManager.Instance == null) yield break;
+        
+        // 방 정보가 없으면 기본값으로 설정
+        if (CurrentRoomID == -1 && NetworkManager.Instance.PendingRoomID != -1)
+        {
+            int pendingRoomID = NetworkManager.Instance.PendingRoomID;
+            SetCurrentRoomID(pendingRoomID);
+            
+            // 방 이름이 없으면 기본값 사용 (실제 방 이름은 서버에서 받아야 함)
+            // PendingRoomName이 있으면 사용, 없으면 기본값
+            if (string.IsNullOrEmpty(_currentRoomName))
+            {
+                string pendingRoomName = NetworkManager.Instance.PendingRoomName;
+                _currentRoomName = !string.IsNullOrEmpty(pendingRoomName) ? pendingRoomName : $"Room #{pendingRoomID}";
+            }
+            
+            // UI 업데이트
+            if (roomUI != null)
+            {
+                roomUI.UpdateRoomInfo(pendingRoomID, _currentRoomName, _currentPlayerCount, _maxPlayers);
+            }
+            
+            // 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
+            if (_isHost && NetworkManager.Instance.ConnectedUserName != null)
+            {
+                int myUserID = NetworkManager.Instance.ConnectedUserID;
+                if (myUserID != -1)
+                {
+                    // 이미 추가되어 있는지 확인
+                    bool exists = false;
+                    foreach (var player in _playerList)
+                    {
+                        if (player.PlayerID == myUserID)
+                        {
+                            exists = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!exists)
+                    {
+                        Debug.Log($"[RoomManager] 방장 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName={NetworkManager.Instance.ConnectedUserName}");
+                        _playerList.Add(new PlayerReadyData(myUserID, NetworkManager.Instance.ConnectedUserName, false));
+                        
+                        if (roomUI != null)
+                        {
+                            roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
+                        }
+                    }
+                }
             }
         }
     }
@@ -132,12 +200,16 @@ public class RoomManager : MonoBehaviour
 
     public void UpdatePlayerList(List<PlayerReadyData> players)
     {
+        // 변경 감지: 플레이어 목록이 실제로 변경되었는지 확인
+        bool listChanged = HasPlayerListChanged(players);
+        
         _playerList = players;
 
         Debug.Log($"[RoomManager] 플레이어 목록 업데이트: {players.Count}명");
 
         // 로컬 플레이어의 Ready 상태 확인
         string localUserName = NetworkManager.Instance?.ConnectedUserName ?? "Player1";
+        bool previousReadyState = _isLocalPlayerReady;
         _isLocalPlayerReady = false;
         foreach (var player in players)
         {
@@ -148,13 +220,52 @@ public class RoomManager : MonoBehaviour
             }
         }
 
-        if (roomUI != null)
+        // UI 업데이트는 목록이 변경되었거나 Ready 상태가 변경된 경우에만
+        if (listChanged || previousReadyState != _isLocalPlayerReady)
         {
-            roomUI.UpdatePlayerList(players, _isLocalPlayerReady);
+            if (roomUI != null)
+            {
+                roomUI.UpdatePlayerList(players, _isLocalPlayerReady);
+            }
         }
 
         // 모든 플레이어가 Ready인지 확인
         CheckAllPlayersReady(players);
+    }
+
+    private bool HasPlayerListChanged(List<PlayerReadyData> newPlayers)
+    {
+        // 플레이어 수가 다르면 변경됨
+        if (_playerList.Count != newPlayers.Count)
+        {
+            return true;
+        }
+
+        // 플레이어 ID나 Ready 상태가 다르면 변경됨
+        for (int i = 0; i < newPlayers.Count; i++)
+        {
+            bool found = false;
+            foreach (var oldPlayer in _playerList)
+            {
+                if (oldPlayer.PlayerID == newPlayers[i].PlayerID)
+                {
+                    found = true;
+                    // Ready 상태가 변경되었는지 확인
+                    if (oldPlayer.IsReady != newPlayers[i].IsReady)
+                    {
+                        return true;
+                    }
+                    break;
+                }
+            }
+            // 새로운 플레이어가 추가되었는지 확인
+            if (!found)
+            {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private void CheckAllPlayersReady(List<PlayerReadyData> players)
