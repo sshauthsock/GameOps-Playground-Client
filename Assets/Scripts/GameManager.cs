@@ -288,4 +288,79 @@ public class GameManager : MonoBehaviour
             Debug.LogWarning("[GameManager] GameUI를 찾을 수 없습니다. GameScene에 GameUI 컴포넌트가 있는지 확인하세요.");
         }
     }
+
+    // 플레이어 사망 후 게임 종료 조건 체크
+    public void CheckGameEnd()
+    {
+        // 다음 프레임에 체크하도록 지연 (Die()가 완전히 실행된 후 체크)
+        StartCoroutine(CheckGameEndDelayed());
+    }
+
+    private IEnumerator CheckGameEndDelayed()
+    {
+        // 한 프레임 대기하여 Die()가 완전히 실행되도록 함
+        yield return null;
+
+        if (PlayerManager.Instance == null)
+        {
+            Debug.LogWarning("[GameManager] PlayerManager.Instance가 null입니다.");
+            yield break;
+        }
+
+        var allPlayers = PlayerManager.Instance.GetAllPlayers();
+        int aliveCount = 0;
+        int lastAlivePlayerID = -1;
+
+        Debug.Log($"[GameManager] 게임 종료 체크 시작 - 총 플레이어 수: {allPlayers.Count}");
+
+        foreach (var kvp in allPlayers)
+        {
+            var playerObj = kvp.Value;
+            if (playerObj == null)
+            {
+                Debug.Log($"[GameManager] PlayerID {kvp.Key}: GameObject가 null");
+                continue;
+            }
+
+            var controller = playerObj.GetComponent<PlayerController>();
+            if (controller == null)
+            {
+                Debug.Log($"[GameManager] PlayerID {kvp.Key}: PlayerController가 null");
+                continue;
+            }
+
+            // isDead 플래그와 activeSelf 모두 체크
+            bool isAlive = !controller.isDead && playerObj.activeSelf;
+            Debug.Log($"[GameManager] PlayerID {kvp.Key}: isDead={controller.isDead}, activeSelf={playerObj.activeSelf}, isAlive={isAlive}");
+
+            if (isAlive)
+            {
+                aliveCount++;
+                lastAlivePlayerID = kvp.Key;
+            }
+        }
+
+        Debug.Log($"[GameManager] 게임 종료 체크 완료 - 생존 플레이어 수: {aliveCount}, 총 플레이어 수: {allPlayers.Count}");
+
+        // 생존 플레이어가 1명 이하이면 게임 종료
+        if (aliveCount <= 1 && allPlayers.Count > 1)
+        {
+            int winnerID = (aliveCount == 1) ? lastAlivePlayerID : -1;
+            Debug.Log($"[GameManager] ✅ 게임 종료! 승자: {winnerID}");
+            
+            // GameUI에 게임 종료 표시
+            if (GameUI.Instance != null)
+            {
+                GameUI.Instance.ShowGameOver(winnerID);
+            }
+            else
+            {
+                Debug.LogError("[GameManager] GameUI.Instance가 null입니다!");
+            }
+        }
+        else
+        {
+            Debug.Log($"[GameManager] 게임 계속 - 생존 플레이어: {aliveCount}명");
+        }
+    }
 }

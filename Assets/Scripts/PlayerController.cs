@@ -129,12 +129,24 @@ public class PlayerController : MonoBehaviour
 
     private void Die()
     {
+        if (isDead)
+        {
+            Debug.LogWarning($"[ID {this.name}] 이미 사망 상태입니다.");
+            return;
+        }
+
         isDead = true;
         // 사망 시 HP Bar도 0으로 확정
         if (hpBarSlider != null) hpBarSlider.value = 0;
 
         gameObject.SetActive(false);
-        Debug.Log($"[ID {this.name}] 사망 처리 완료");
+        Debug.Log($"[ID {this.name}] 사망 처리 완료 - isDead: {isDead}, activeSelf: {gameObject.activeSelf}");
+        
+        // 게임 종료 체크 (Die() 완료 후 호출)
+        if (GameManager.Instance != null)
+        {
+            GameManager.Instance.CheckGameEnd();
+        }
     }
     private void ApplyTankColors()
     {

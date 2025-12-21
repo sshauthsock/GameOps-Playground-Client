@@ -2068,11 +2068,12 @@ public class NetworkManager : MonoBehaviour
                     if (controller != null)
                     {
                         // 사망 처리 (HP를 0으로 만들어 Die() 호출)
+                        // Die() 메서드 내부에서 CheckGameEnd()가 호출되므로 여기서는 호출하지 않음
                         if (!controller.isDead)
                         {
                             Debug.Log($"[Player Death] ID {victimID} 사망 처리 시작 (TakeDamage 호출)");
                             controller.TakeDamage(9999f);
-                            Debug.Log($"[Player Death] ID {victimID} 사망 처리 완료 (gameObject.SetActive(false) 호출됨)");
+                            Debug.Log($"[Player Death] ID {victimID} 사망 처리 완료 (Die()에서 CheckGameEnd() 호출됨)");
                         }
                         else
                         {
@@ -2109,14 +2110,16 @@ public class NetworkManager : MonoBehaviour
 
             Debug.Log($"[Game End Notify] ID 440 수신 - Winner: {winnerID}");
 
-            // 게임 종료 UI 표시 등 처리
+            // 게임 종료 UI 표시
             if (GameUI.Instance != null)
             {
-                // GameUI에 승자 정보 표시 (GameUI에 메서드가 있다면)
+                GameUI.Instance.ShowGameOver(winnerID);
                 Debug.Log($"[Game End] 게임 종료! 승자: ID {winnerID}");
             }
-
-            // TODO: 게임 종료 후 로비로 돌아가거나 결과 화면 표시
+            else
+            {
+                Debug.LogWarning("[Game End] GameUI.Instance가 null입니다.");
+            }
         }
         catch (Exception ex)
         {
