@@ -116,7 +116,8 @@ public class GameManager : MonoBehaviour
                 PlayerManager.Instance.AddPlayer(
                     playerID: playerInfo.UserID,
                     userName: playerInfo.UserName,
-                    position: spawnPosition
+                    position: spawnPosition,
+                    totalPlayerCount: playerCount
                 );
                 
                 Debug.Log($"[GameManager] 플레이어 생성: ID={playerInfo.UserID}, Name={playerInfo.UserName}, Pos={spawnPosition}, IsHost={i == 0}, Index={i}/{playerCount}");
@@ -126,13 +127,14 @@ public class GameManager : MonoBehaviour
         {
             Debug.LogError("[GameManager] 플레이어 목록을 가져올 수 없습니다!");
             
-            // 폴백: 기존 로직 사용
+            // 폴백: 기존 로직 사용 (플레이어 목록을 가져올 수 없는 경우, 1명으로 간주)
             if (PlayerManager.Instance.MyPlayerID != -1)
             {
                 PlayerManager.Instance.AddPlayer(
                     playerID: PlayerManager.Instance.MyPlayerID,
                     userName: NetworkManager.Instance.ConnectedUserName,
-                    position: Vector3.zero
+                    position: Vector3.zero,
+                    totalPlayerCount: 1
                 );
             }
         }
@@ -207,10 +209,20 @@ public class GameManager : MonoBehaviour
             int myUserID = NetworkManager.Instance.ConnectedUserID;
             int myPlayerID = PlayerManager.Instance.MyPlayerID;
             
+            // [핵심 수정] firstTurnPlayerID가 -1이면 플레이어 목록의 첫 번째 플레이어를 첫 턴으로 설정
+            if (firstTurnPlayerID == -1 && NetworkManager.Instance._gamePlayerList != null && NetworkManager.Instance._gamePlayerList.Count > 0)
+            {
+                // 플레이어 목록을 UserID로 정렬하여 첫 번째 플레이어 선택
+                var sortedPlayers = new List<PlayerInfo>(NetworkManager.Instance._gamePlayerList);
+                sortedPlayers.Sort((a, b) => a.UserID.CompareTo(b.UserID));
+                firstTurnPlayerID = sortedPlayers[0].UserID;
+                Debug.LogWarning($"[GameManager] GetCurrentTurnPlayerID()가 -1을 반환했습니다. 플레이어 목록의 첫 번째 플레이어({firstTurnPlayerID})를 첫 턴으로 설정합니다.");
+            }
+            
             Debug.Log($"[GameManager] 첫 턴 설정: FirstTurnPlayerID={firstTurnPlayerID}, ConnectedUserID={myUserID}, MyPlayerID={myPlayerID}");
 
             // 모든 플레이어에게 턴 정보 업데이트
-            if (NetworkManager.Instance._gamePlayerList != null)
+            if (NetworkManager.Instance._gamePlayerList != null && firstTurnPlayerID != -1)
             {
                 foreach (var playerInfo in NetworkManager.Instance._gamePlayerList)
                 {
@@ -228,9 +240,20 @@ public class GameManager : MonoBehaviour
                             
                             controller.SetCanControl(canControl);
                             Debug.Log($"[GameManager] Player {playerInfo.UserID}: isLocal={isLocalPlayer}, isMyTurn={isMyTurn}, canControl={canControl}");
+                            
+                            // 첫 턴 플레이어에게 OnTurnStart 호출
+                            if (isMyTurn)
+                            {
+                                controller.OnTurnStart(30); // 기본 턴 시간 30초
+                                Debug.Log($"[GameManager] ✅ PlayerID {playerInfo.UserID}의 첫 턴 시작! OnTurnStart 호출");
+                            }
                         }
                     }
                 }
+            }
+            else
+            {
+                Debug.LogWarning($"[GameManager] ⚠️ 플레이어 목록이 null이거나 firstTurnPlayerID가 -1입니다. 턴 설정을 건너뜁니다.");
             }
             
             // ID 430을 기다리는 동안 초기 턴 설정이 완료되었음을 로그로 표시

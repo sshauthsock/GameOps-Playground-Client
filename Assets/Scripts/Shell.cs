@@ -14,13 +14,15 @@ public class Shell : MonoBehaviour
     }
     private void OnTriggerEnter(Collider other)
     {
+        // 생성 직후 무적 시간 동안은 충돌 무시
         if (Time.time - spawnTime < invincibilityTime) return;
 
+        // 탱크와의 충돌 확인 (GetComponentInParent로 자식 오브젝트의 Collider도 처리)
         PlayerController target = other.GetComponentInParent<PlayerController>();
 
         if (target != null)
         {
-            Debug.Log($"[Shell] 충돌 감지! 대상 이름: {target.gameObject.name}");
+            Debug.Log($"[Shell] 탱크 충돌 감지! 대상 이름: {target.gameObject.name}, PlayerID: {target.playerID}, Collider: {other.name}");
             
             // [중요] 서버 주도 판정 방식으로 변경됨
             // 클라이언트는 포탄 충돌 시 데미지 보고(ID 700)를 보내지 않습니다.
@@ -28,7 +30,16 @@ public class Shell : MonoBehaviour
             // 클라이언트는 서버가 보내는 발사 결과(ID 421) 패킷을 받아서 체력을 갱신합니다.
             // 이렇게 하면 보안과 동기화가 보장됩니다.
             
-            // 포탄은 충돌 시 소멸
+            // 포탄은 탱크에 맞으면 즉시 소멸
+            Destroy(gameObject);
+            return;
+        }
+        
+        // 탱크가 아닌 다른 오브젝트(벽, 지형 등)와 충돌한 경우에도 소멸
+        // 단, 포탄 자체나 다른 포탄과는 충돌 무시
+        if (!other.CompareTag("Shell") && !other.CompareTag("Untagged"))
+        {
+            Debug.Log($"[Shell] 다른 오브젝트와 충돌: {other.gameObject.name}, Tag: {other.tag}");
             Destroy(gameObject);
         }
     }

@@ -103,9 +103,44 @@ GameOps-Playground-Client/
 
 ## Server Connection
 
-- **서버 주소**: (추가 예정)
-- **API 규격**: (추가 예정)
-- **인증/세션 방식**: (추가 예정)
+- **서버 주소**: 기본값 `127.0.0.1:7777` (NetworkManager Inspector에서 변경 가능)
+- **프로토콜**: TCP 소켓 통신, 커스텀 바이너리 프로토콜
+- **서버 배포**: `Archive/` 폴더의 Dockerfile을 사용하여 서버 배포 가능
+
+## 배포 가이드
+
+게임을 배포하여 다른 사람들과 테스트하는 방법:
+
+### 📚 배포 옵션
+
+1. **Amazon GameLift 배포** (프로덕션 권장)
+   - 자동 스케일링, DDoS 보호, 글로벌 배포
+   - 비용: $80~$150/월
+   - 상세 가이드: [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md#옵션-1-amazon-gamelift-배포)
+
+2. **WebGL 배포** (빠른 테스트 권장)
+   - 브라우저에서 바로 플레이 가능
+   - 비용: $0~$10/월 (무료 호스팅 가능)
+   - 상세 가이드: [DEPLOYMENT_GUIDE.md](./DEPLOYMENT_GUIDE.md#옵션-2-webgl-배포)
+
+### 🚀 빠른 시작
+
+**WebGL 배포 (30분):**
+1. Unity에서 WebGL 빌드 생성
+2. GitHub Pages/Netlify에 업로드
+3. EC2에 Docker 서버 배포
+4. NetworkManager에 서버 IP 설정
+5. 완료!
+
+**GameLift 배포 (2~4시간):**
+1. Docker 이미지를 ECR에 푸시
+2. GameLift Fleet 생성
+3. Unity에서 클라이언트 빌드
+4. GitHub Releases에 클라이언트 업로드
+5. NetworkManager에 Fleet 엔드포인트 설정
+6. 완료!
+
+**상세한 구현 방법**: [DEPLOYMENT_IMPLEMENTATION.md](./DEPLOYMENT_IMPLEMENTATION.md)
 
 ## Testing Guide
 

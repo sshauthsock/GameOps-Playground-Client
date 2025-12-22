@@ -1661,10 +1661,26 @@ public class NetworkManager : MonoBehaviour
     // GameManager가 플레이어 생성 완료 후 호출하는 메서드
     public void ApplyPendingTurnControl()
     {
-        if (_currentTurnPlayerID != -1)
+        // [핵심 수정] _currentTurnPlayerID가 -1이면 플레이어 목록의 첫 번째 플레이어를 첫 턴으로 설정
+        int turnPlayerID = _currentTurnPlayerID;
+        if (turnPlayerID == -1 && _gamePlayerList != null && _gamePlayerList.Count > 0)
         {
-            Debug.Log($"[ApplyPendingTurnControl] 보류된 턴 정보 적용. CurrentTurnPlayerID: {_currentTurnPlayerID}");
-            ApplyTurnControlToAllPlayers(_currentTurnPlayerID, 30); // 기본 턴 시간 30초
+            // 플레이어 목록을 UserID로 정렬하여 첫 번째 플레이어 선택
+            var sortedPlayers = new List<PlayerInfo>(_gamePlayerList);
+            sortedPlayers.Sort((a, b) => a.UserID.CompareTo(b.UserID));
+            turnPlayerID = sortedPlayers[0].UserID;
+            _currentTurnPlayerID = turnPlayerID; // _currentTurnPlayerID도 업데이트
+            Debug.LogWarning($"[ApplyPendingTurnControl] _currentTurnPlayerID가 -1이었습니다. 플레이어 목록의 첫 번째 플레이어({turnPlayerID})를 첫 턴으로 설정합니다.");
+        }
+        
+        if (turnPlayerID != -1)
+        {
+            Debug.Log($"[ApplyPendingTurnControl] 보류된 턴 정보 적용. CurrentTurnPlayerID: {turnPlayerID}");
+            ApplyTurnControlToAllPlayers(turnPlayerID, 30); // 기본 턴 시간 30초
+        }
+        else
+        {
+            Debug.LogWarning($"[ApplyPendingTurnControl] ⚠️ 턴 플레이어 ID를 결정할 수 없습니다. 플레이어 목록이 비어있거나 설정되지 않았습니다.");
         }
     }
 

@@ -35,7 +35,7 @@ public class PlayerManager : MonoBehaviour
     }
 
     // --- 핵심 기능 1: 캐릭터 생성 ---
-    public void AddPlayer(int playerID, string userName, Vector3 position)
+    public void AddPlayer(int playerID, string userName, Vector3 position, int totalPlayerCount = -1)
     {
         if (_players.ContainsKey(playerID))
         {
@@ -69,9 +69,41 @@ public class PlayerManager : MonoBehaviour
             
             // 5. [중요] 모든 플레이어의 초기 위치를 _targetPosition으로 설정하여 잘못된 위치로 이동하는 것을 방지
             // 로컬 플레이어도 초기 위치를 명시적으로 설정하여 Start()에서 잘못된 _targetPosition이 설정되는 것을 방지
-            Quaternion initialRotation = isLocal ? Quaternion.Euler(0, 90f, 0) : Quaternion.Euler(0, -90f, 0);
+            // [수정] 모든 탱크는 오른쪽(90도) 또는 왼쪽(-90도)만 봄
+            Quaternion initialRotation;
+            
+            // totalPlayerCount가 -1이면 _players.Count를 사용 (하위 호환성)
+            int playerCount = (totalPlayerCount > 0) ? totalPlayerCount : (_players.Count + 1);
+            
+            if (playerCount == 1)
+            {
+                // 1명: 가운데 탱크는 오른쪽(90도)을 봄
+                initialRotation = Quaternion.Euler(0, 90f, 0);
+            }
+            else if (playerCount == 2)
+            {
+                // 2명: 위치에 따라 설정 (왼쪽은 오른쪽을, 오른쪽은 왼쪽을 봄)
+                if (position.x < 0)
+                {
+                    initialRotation = Quaternion.Euler(0, 90f, 0); // 왼쪽에 있으면 오른쪽을 봄
+                }
+                else if (position.x > 0)
+                {
+                    initialRotation = Quaternion.Euler(0, -90f, 0); // 오른쪽에 있으면 왼쪽을 봄
+                }
+                else
+                {
+                    initialRotation = Quaternion.Euler(0, 90f, 0); // 기본값: 오른쪽
+                }
+            }
+            else
+            {
+                // 3명 이상: 모든 탱크가 동일한 방향(오른쪽 90도)을 봄
+                initialRotation = Quaternion.Euler(0, 90f, 0);
+            }
+            
             controller.SetNetworkPosition(position, initialRotation);
-            Debug.Log($"[PlayerManager] 플레이어({playerID})의 초기 위치 설정: {position}, isLocal: {isLocal}");
+            Debug.Log($"[PlayerManager] 플레이어({playerID})의 초기 위치 설정: {position}, 회전: {initialRotation.eulerAngles}, 플레이어 수: {playerCount}, isLocal: {isLocal}");
             
             Debug.Log($"[PlayerManager] ID {playerID} 설정 완료. Local: {isLocal}");
         }

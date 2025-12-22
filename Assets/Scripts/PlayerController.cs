@@ -36,6 +36,8 @@ public class PlayerController : MonoBehaviour
     private Vector3 _targetPosition;
     private Quaternion _targetRotation;
     private bool _isTargetPositionInitialized = false; // 초기 위치가 설정되었는지 확인
+    private float _initialSetupTime = 0f; // 초기 설정 시간 (순간이동 방지)
+    private const float INITIAL_SETUP_DURATION = 0.5f; // 초기 설정 후 0.5초 동안 위치 고정
 
     private Rigidbody _rb;
 
@@ -50,6 +52,11 @@ public class PlayerController : MonoBehaviour
         {
             nameTagText = GetComponentInChildren<TextMeshProUGUI>(true);
         }
+        
+        // 초기 회전을 기본값으로 설정 (SetNetworkPosition이 나중에 덮어쓸 수 있음)
+        // 모든 탱크는 오른쪽(90도) 또는 왼쪽(-90도)만 봄
+        transform.rotation = Quaternion.Euler(0, 90f, 0);
+        _targetRotation = transform.rotation;
     }
 
     void Start()
@@ -62,27 +69,73 @@ public class PlayerController : MonoBehaviour
             _targetPosition = transform.position;
         }
 
-        if (isLocalPlayer)
+        // [수정] 모든 탱크는 오른쪽(90도) 또는 왼쪽(-90도)만 봄
+        // SetNetworkPosition이 호출된 경우 그 회전을 강제로 적용
+        // 모든 클라이언트에서 동일한 회전이 적용되도록 함
+        if (_isTargetPositionInitialized)
         {
-            // 내 탱크: 오른쪽(90도)을 바라보며 시작
-            transform.rotation = Quaternion.Euler(0, 90f, 0);
+            // SetNetworkPosition이 이미 호출된 경우, 설정된 회전을 강제로 적용
+            // 회전 Y가 정확히 90도 또는 -90도인지 확인
+            float targetY = _targetRotation.eulerAngles.y;
+            Quaternion normalizedRot;
+            if (targetY > 45f && targetY < 135f)
+            {
+                normalizedRot = Quaternion.Euler(0, 90f, 0);
+            }
+            else if (targetY > 225f && targetY < 315f)
+            {
+                normalizedRot = Quaternion.Euler(0, -90f, 0);
+            }
+            else
+            {
+                normalizedRot = Quaternion.Euler(0, 90f, 0); // 기본값
+            }
+            transform.rotation = normalizedRot;
+            _targetRotation = normalizedRot; // 정규화된 회전으로 업데이트
+            Debug.Log($"[PlayerController] Start: SetNetworkPosition에서 설정된 회전 강제 적용 - {normalizedRot.eulerAngles}, 현재 회전: {transform.rotation.eulerAngles}");
         }
         else
         {
-            // 적 탱크: 내 쪽인 왼쪽(-90도 또는 270도)을 바라보며 시작
-            transform.rotation = Quaternion.Euler(0, -90f, 0);
-        }
-
-        // 초기 회전 설정 (SetNetworkPosition이 호출되지 않은 경우에만)
-        if (!_isTargetPositionInitialized)
-        {
+            // SetNetworkPosition이 아직 호출되지 않은 경우, Awake()에서 설정한 기본값 유지
+            // (PlayerManager.AddPlayer에서 SetNetworkPosition이 호출될 때까지 대기)
+            // 회전 Y가 정확히 90도인지 확인
+            transform.rotation = Quaternion.Euler(0, 90f, 0);
             _targetRotation = transform.rotation;
+            Debug.Log($"[PlayerController] Start: SetNetworkPosition 대기 중, 기본 회전 설정 - {transform.rotation.eulerAngles}");
         }
-
-        // 리지드바디 설정 확인 (Is Kinematic이 켜져 있어야 보간이 깔끔합니다)
+        // 리지드바디 설정 확인
         if (_rb != null)
         {
-            _rb.isKinematic = !isLocalPlayer;
+            if (isLocalPlayer)
+            {
+                // 로컬 플레이어: 물리 시뮬레이션 사용 (충돌 감지 가능)
+                _rb.isKinematic = false;
+                _rb.useGravity = false; // 중력 사용 안 함
+                _rb.constraints = RigidbodyConstraints.FreezeRotationX | RigidbodyConstraints.FreezeRotationZ; // X, Z 회전 고정
+                _rb.collisionDetectionMode = CollisionDetectionMode.Continuous; // 연속 충돌 감지 (빠른 이동 시 충돌 감지 개선)
+                _rb.interpolation = RigidbodyInterpolation.Interpolate; // 부드러운 움직임
+            }
+            else
+            {
+                // 원격 플레이어: Kinematic으로 설정 (코드에서 위치 직접 제어)
+                _rb.isKinematic = true;
+            }
+            Debug.Log($"[PlayerController] Rigidbody 설정 - isKinematic: {_rb.isKinematic}, isLocalPlayer: {isLocalPlayer}, collisionDetection: {_rb.collisionDetectionMode}");
+        }
+        
+        // Collider 설정 확인 및 수정
+        Collider[] colliders = GetComponentsInChildren<Collider>();
+        foreach (Collider col in colliders)
+        {
+            if (col != null)
+            {
+                // 탱크의 Collider는 isTrigger = false여야 물리 충돌이 작동함
+                if (col.isTrigger)
+                {
+                    Debug.LogWarning($"[PlayerController] Collider '{col.name}'가 isTrigger=true입니다. 탱크 간 충돌을 위해 false로 변경합니다.");
+                    col.isTrigger = false;
+                }
+            }
         }
 
         // nameTagText 초기화 (SetPlayerID가 호출되기 전에 미리 찾아둠)
@@ -298,19 +351,61 @@ public class PlayerController : MonoBehaviour
         // [중요] transform.position을 직접 설정하여 즉시 위치를 업데이트
         // 이렇게 하면 InterpolatePosition이 잘못된 초기 위치에서 보간하지 않습니다
         
-        // 로컬 플레이어가 아닌 경우에만 네트워크 위치를 적용
-        // 로컬 플레이어는 직접 입력으로 제어되므로 네트워크 위치를 무시
-        if (!isLocalPlayer)
+        bool isInitialSetup = !_isTargetPositionInitialized;
+        
+        // [핵심 수정] 회전을 정확히 90도 또는 -90도로 정규화
+        float rotY = rot.eulerAngles.y;
+        Quaternion normalizedRot;
+        if (rotY > 45f && rotY < 135f)
         {
+            normalizedRot = Quaternion.Euler(0, 90f, 0);
+        }
+        else if (rotY > 225f && rotY < 315f)
+        {
+            normalizedRot = Quaternion.Euler(0, -90f, 0);
+        }
+        else
+        {
+            // 기본값: 오른쪽
+            normalizedRot = Quaternion.Euler(0, 90f, 0);
+        }
+        
+        // [핵심 수정] 초기 설정 시 모든 플레이어(로컬/원격)의 위치와 회전을 즉시 설정
+        // 이후에는 로컬 플레이어는 입력으로만 제어, 원격 플레이어는 네트워크 위치로 제어
+        if (isInitialSetup)
+        {
+            // 초기 설정 시: 모든 플레이어의 위치와 회전을 즉시 설정 (순간이동 방지)
             transform.position = pos;
-            transform.rotation = rot;
+            transform.rotation = normalizedRot;
+            Debug.Log($"[SetNetworkPosition] 초기 설정: 모든 플레이어 위치/회전 즉시 설정 - Pos: {pos}, Rot: {normalizedRot.eulerAngles}, isLocalPlayer: {isLocalPlayer}");
+        }
+        else
+        {
+            // 초기 설정 이후: 로컬 플레이어는 위치를 무시, 원격 플레이어만 위치 업데이트
+            if (!isLocalPlayer)
+            {
+                // 원격 플레이어: 위치와 회전 모두 업데이트
+                transform.position = pos;
+                transform.rotation = normalizedRot;
+            }
+            else
+            {
+                // 로컬 플레이어: 회전만 업데이트 (위치는 입력으로 제어)
+                transform.rotation = normalizedRot;
+            }
         }
         
         _targetPosition = pos;
-        _targetRotation = rot;
-        _isTargetPositionInitialized = true; // 초기 위치가 설정되었음을 표시
+        _targetRotation = normalizedRot; // 정규화된 회전 저장
         
-        Debug.Log($"[SetNetworkPosition] PlayerID: {playerID}, 즉시 위치 설정: {pos}, 회전: {rot.eulerAngles}, isLocalPlayer: {isLocalPlayer}");
+        if (isInitialSetup)
+        {
+            _isTargetPositionInitialized = true; // 초기 위치가 설정되었음을 표시
+            _initialSetupTime = Time.time; // 초기 설정 시간 기록
+            Debug.Log($"[SetNetworkPosition] 초기 설정 완료 - PlayerID: {playerID}, Pos: {pos}, Rot: {normalizedRot.eulerAngles}, isLocalPlayer: {isLocalPlayer}");
+        }
+        
+        Debug.Log($"[SetNetworkPosition] PlayerID: {playerID}, 위치 설정: {pos}, 회전: {normalizedRot.eulerAngles}, isLocalPlayer: {isLocalPlayer}, isInitialSetup: {isInitialSetup}");
     }
 
     private void Update()
@@ -326,6 +421,47 @@ public class PlayerController : MonoBehaviour
         
         // 화살표 표시기 업데이트
         UpdateArrowIndicator();
+    }
+    
+    void LateUpdate()
+    {
+        // [핵심 수정] 모든 프레임에서 회전 Y가 정확히 90도 또는 -90도인지 확인하고 수정
+        float currentY = transform.rotation.eulerAngles.y;
+        
+        // 90도 또는 -90도(270도)가 아니면 수정
+        bool isValidRotation = (Mathf.Approximately(currentY, 90f) || Mathf.Approximately(currentY, 270f) || 
+                               (currentY > 89f && currentY < 91f) || (currentY > 269f && currentY < 271f));
+        
+        if (!isValidRotation)
+        {
+            // _targetRotation을 기준으로 올바른 방향 설정
+            float targetY = _targetRotation.eulerAngles.y;
+            Quaternion correctRotation;
+            
+            if (targetY > 45f && targetY < 135f)
+            {
+                correctRotation = Quaternion.Euler(0, 90f, 0);
+            }
+            else if (targetY > 225f && targetY < 315f)
+            {
+                correctRotation = Quaternion.Euler(0, -90f, 0);
+            }
+            else
+            {
+                // 현재 회전을 기준으로 가장 가까운 방향 선택
+                if (currentY > 180f)
+                {
+                    correctRotation = Quaternion.Euler(0, -90f, 0);
+                }
+                else
+                {
+                    correctRotation = Quaternion.Euler(0, 90f, 0);
+                }
+            }
+            
+            transform.rotation = correctRotation;
+            Debug.Log($"[PlayerController] LateUpdate: 회전 Y 수정 - {currentY} -> {correctRotation.eulerAngles.y}, PlayerID: {playerID}");
+        }
     }
 
     void FixedUpdate()
@@ -406,11 +542,21 @@ public class PlayerController : MonoBehaviour
         Debug.Log($"[Fire] ✅ 포탄 생성 완료! Shell: {shell.name}, Position: {spawnPosition}");
 
         // [중요] 생성된 포탄이 나(탱크)와 부딪히지 않게 설정 (Layer 설정이 안 되어 있을 때 유용)
-        Collider tankCollider = GetComponent<Collider>();
+        // 모든 탱크 Collider(자식 포함)와 포탄 Collider 간 충돌 무시
+        Collider[] tankColliders = GetComponentsInChildren<Collider>();
         Collider shellCollider = shell.GetComponent<Collider>();
-        if (tankCollider != null && shellCollider != null)
+        
+        if (shellCollider != null)
         {
-            Physics.IgnoreCollision(tankCollider, shellCollider);
+            foreach (Collider tankCollider in tankColliders)
+            {
+                if (tankCollider != null && !tankCollider.isTrigger)
+                {
+                    // 탱크의 물리 Collider와 포탄 Collider 간 충돌 무시
+                    Physics.IgnoreCollision(tankCollider, shellCollider);
+                    Debug.Log($"[Fire] 탱크 Collider '{tankCollider.name}'와 포탄 Collider 간 충돌 무시 설정");
+                }
+            }
         }
 
         Rigidbody rb = shell.GetComponent<Rigidbody>();
@@ -434,23 +580,16 @@ public class PlayerController : MonoBehaviour
             Vector3 nextPosition = _rb.position + moveDirection * moveSpeed * Time.fixedDeltaTime;
             _rb.MovePosition(nextPosition);
 
-            // 2. 회전 즉시 고정 (A/D 버튼 우선 순위)
-            if (horizontal < 0) // A 버튼
+            // 2. 회전 즉시 고정 - 좌우만 가능 (오른쪽 90도 또는 왼쪽 -90도)
+            if (horizontal < 0) // A 버튼 (왼쪽)
             {
                 transform.rotation = Quaternion.Euler(0, -90f, 0);
             }
-            else if (horizontal > 0) // D 버튼
+            else if (horizontal > 0) // D 버튼 (오른쪽)
             {
                 transform.rotation = Quaternion.Euler(0, 90f, 0);
             }
-            else if (vertical > 0) // W 버튼
-            {
-                transform.rotation = Quaternion.Euler(0, 0f, 0);
-            }
-            else if (vertical < 0) // S 버튼
-            {
-                transform.rotation = Quaternion.Euler(0, 180f, 0);
-            }
+            // vertical 입력은 무시 - 위/아래 방향 회전 제거
         }
     }
     // private void HandleLocalMovement()
@@ -502,13 +641,56 @@ public class PlayerController : MonoBehaviour
             return;
         }
         
+        // [핵심 수정] 초기 설정 직후 일정 시간 동안은 위치를 고정하여 순간이동 방지
+        if (Time.time - _initialSetupTime < INITIAL_SETUP_DURATION)
+        {
+            // 초기 설정 직후에는 위치를 고정 (이미 SetNetworkPosition에서 설정됨)
+            return;
+        }
+        
         // 1. 위치만 부드럽게 따라가게 합니다.
         transform.position = Vector3.Lerp(transform.position, _targetPosition, Time.deltaTime * lerpSpeed);
 
         // 2.  Y축 회전이 변하지 않도록 원천 차단 (0,0,0으로 고정)
         // transform.rotation = Quaternion.identity;
 
-        transform.rotation = Quaternion.Slerp(transform.rotation, _targetRotation, Time.deltaTime * lerpSpeed);
+        // [핵심 수정] 회전 보간 시 오른쪽(90도) 또는 왼쪽(-90도)만 허용
+        // 다른 방향으로 보간되는 것을 방지
+        Quaternion targetRot = _targetRotation;
+        float targetY = targetRot.eulerAngles.y;
+        
+        // Y축 회전을 90도 또는 -90도(270도)로 정규화
+        if (targetY > 45f && targetY < 135f)
+        {
+            targetRot = Quaternion.Euler(0, 90f, 0); // 오른쪽
+        }
+        else if (targetY > 225f && targetY < 315f)
+        {
+            targetRot = Quaternion.Euler(0, -90f, 0); // 왼쪽 (270도 = -90도)
+        }
+        else
+        {
+            // 기본값: 오른쪽
+            targetRot = Quaternion.Euler(0, 90f, 0);
+        }
+        
+        transform.rotation = Quaternion.Slerp(transform.rotation, targetRot, Time.deltaTime * lerpSpeed);
+        
+        // [핵심 수정] 보간 후에도 정확히 90도 또는 -90도로 강제 설정
+        float currentY = transform.rotation.eulerAngles.y;
+        if (currentY > 45f && currentY < 135f)
+        {
+            transform.rotation = Quaternion.Euler(0, 90f, 0);
+        }
+        else if (currentY > 225f && currentY < 315f)
+        {
+            transform.rotation = Quaternion.Euler(0, -90f, 0);
+        }
+        else
+        {
+            // 기본값: 오른쪽
+            transform.rotation = Quaternion.Euler(0, 90f, 0);
+        }
 
         // 3.  크기가 늘어나는 현상을 방지하기 위해 스케일을 (1,1,1)로 고정합니다.
         transform.localScale = Vector3.one;
@@ -542,6 +724,14 @@ public class PlayerController : MonoBehaviour
         this.playerID = id;
         this.isLocalPlayer = isLocal;
         Debug.Log($"[SetPlayerID] ID: {id}, isLocal: {isLocal}");
+        
+        // [핵심 수정] SetPlayerID 호출 시에도 회전이 올바르게 설정되었는지 확인
+        // SetNetworkPosition이 이미 호출되었다면 그 회전을 유지
+        if (_isTargetPositionInitialized && _targetRotation != Quaternion.identity)
+        {
+            transform.rotation = _targetRotation;
+            Debug.Log($"[SetPlayerID] SetNetworkPosition에서 설정된 회전 적용 - {_targetRotation.eulerAngles}");
+        }
 
         // nameTagText 찾기 (여러 방법으로 시도)
         if (nameTagText == null)
