@@ -63,66 +63,54 @@ public class GameManager : MonoBehaviour
             var playerList = NetworkManager.Instance._gamePlayerList;
             Debug.Log($"[GameManager] 게임 시작 - 플레이어 {playerList.Count}명 생성 시작");
 
-            // 플레이어를 방장/일반 유저 순서로 정렬 (방장이 첫 번째)
+            // [핵심 수정] 모든 클라이언트에서 동일한 순서를 보장하기 위해 UserID로 정렬
+            // 이렇게 하면 모든 클라이언트에서 동일한 플레이어 순서, 색상, 위치를 보장할 수 있음
             var sortedPlayers = new List<PlayerInfo>(playerList);
-            int myUserID = NetworkManager.Instance.ConnectedUserID;
-            int createdRoomID = NetworkManager.Instance.CreatedRoomID;
             
-            Debug.Log($"[GameManager] 플레이어 정렬 시작 - myUserID: {myUserID}, createdRoomID: {createdRoomID}, playerList.Count: {playerList.Count}");
+            // UserID 오름차순으로 정렬 (모든 클라이언트에서 동일한 순서 보장)
+            sortedPlayers.Sort((a, b) => a.UserID.CompareTo(b.UserID));
             
-            // 방장 찾기: CreatedRoomID != -1인 클라이언트가 방장
-            // 즉, 내가 방을 생성했다면(myUserID가 방장), 내 UserID를 가진 플레이어가 방장
-            int hostUserID = -1;
-            if (createdRoomID != -1 && myUserID != -1)
-            {
-                // 내가 방을 생성했다면 내가 방장
-                var hostPlayer = sortedPlayers.Find(p => p.UserID == myUserID);
-                if (hostPlayer != null)
-                {
-                    hostUserID = myUserID;
-                    sortedPlayers.Remove(hostPlayer);
-                    sortedPlayers.Insert(0, hostPlayer);
-                    Debug.Log($"[GameManager] ✅ 방장 찾음: UserID={hostPlayer.UserID}, Name={hostPlayer.UserName} (내가 방 생성)");
-                }
-                else
-                {
-                    Debug.LogWarning($"[GameManager] ⚠️ 내 UserID({myUserID})를 플레이어 목록에서 찾을 수 없습니다.");
-                    Debug.LogWarning($"[GameManager] 플레이어 목록:");
-                    foreach (var p in sortedPlayers)
-                    {
-                        Debug.LogWarning($"[GameManager]   - UserID: {p.UserID}, UserName: {p.UserName}");
-                    }
-                }
-            }
-            
-            // 내가 방장이 아니면, 첫 번째 플레이어를 방장으로 가정 (서버에서 방장 정보를 받지 못한 경우)
-            if (hostUserID == -1 && sortedPlayers.Count > 0)
-            {
-                Debug.LogWarning($"[GameManager] ⚠️ 방장을 찾을 수 없습니다. 첫 번째 플레이어(UserID={sortedPlayers[0].UserID})를 방장으로 설정합니다.");
-            }
-            
-            Debug.Log($"[GameManager] 정렬된 플레이어 목록:");
+            Debug.Log($"[GameManager] 플레이어 정렬 시작 - playerList.Count: {playerList.Count}");
+            Debug.Log($"[GameManager] 정렬된 플레이어 목록 (UserID 오름차순):");
             for (int i = 0; i < sortedPlayers.Count; i++)
             {
                 Debug.Log($"[GameManager]   [{i}] UserID: {sortedPlayers[i].UserID}, UserName: {sortedPlayers[i].UserName}");
             }
 
-            // 각 플레이어를 다른 위치에 생성
-            // 방장: 왼쪽(-5, 0, 0), 두 번째 유저: 오른쪽(5, 0, 0)
-            for (int i = 0; i < sortedPlayers.Count; i++)
+            // 각 플레이어를 원형으로 배치 (3명 이상 지원)
+            // 중심점: (0, 0, 0), 반지름: 5f
+            // 방장은 왼쪽(-90도)에서 시작하여 시계 방향으로 배치
+            float radius = 5f;
+            int playerCount = sortedPlayers.Count;
+            
+            for (int i = 0; i < playerCount; i++)
             {
                 var playerInfo = sortedPlayers[i];
                 Vector3 spawnPosition;
                 
-                if (i == 0)
+                if (playerCount == 1)
                 {
-                    // 방장: 왼쪽
-                    spawnPosition = new Vector3(-5f, 0, 0);
+                    // 플레이어가 1명인 경우: 중앙
+                    spawnPosition = Vector3.zero;
+                }
+                else if (playerCount == 2)
+                {
+                    // 플레이어가 2명인 경우: 기존 방식 유지 (왼쪽/오른쪽)
+                    spawnPosition = (i == 0) ? new Vector3(-5f, 0, 0) : new Vector3(5f, 0, 0);
                 }
                 else
                 {
-                    // 두 번째 유저: 오른쪽
-                    spawnPosition = new Vector3(5f, 0, 0);
+                    // 플레이어가 3명 이상인 경우: 원형 배치
+                    // 각도 계산: -90도(왼쪽)에서 시작하여 시계 방향으로 균등 분배
+                    float angleStep = 360f / playerCount;
+                    float angle = -90f + (i * angleStep); // -90도에서 시작 (왼쪽)
+                    float angleRad = angle * Mathf.Deg2Rad;
+                    
+                    spawnPosition = new Vector3(
+                        radius * Mathf.Cos(angleRad),
+                        0f,
+                        radius * Mathf.Sin(angleRad)
+                    );
                 }
                 
                 PlayerManager.Instance.AddPlayer(
@@ -131,7 +119,7 @@ public class GameManager : MonoBehaviour
                     position: spawnPosition
                 );
                 
-                Debug.Log($"[GameManager] 플레이어 생성: ID={playerInfo.UserID}, Name={playerInfo.UserName}, Pos={spawnPosition}, IsHost={i == 0}");
+                Debug.Log($"[GameManager] 플레이어 생성: ID={playerInfo.UserID}, Name={playerInfo.UserName}, Pos={spawnPosition}, IsHost={i == 0}, Index={i}/{playerCount}");
             }
         }
         else
@@ -152,106 +140,95 @@ public class GameManager : MonoBehaviour
         // _isGameStarted = true; // 더미 모드에서만 사용 (현재 주석 처리됨)
         Debug.Log("🎉 Game Start Logic 완료 - 이제부터 동기화 시작");
 
-        // MyPlayerID가 설정되었는지 확인하고, 플레이어들의 isLocalPlayer 상태 업데이트
+        // MyPlayerID를 ConnectedUserID와 동기화 (단일 소스 원칙)
         if (PlayerManager.Instance != null && NetworkManager.Instance != null)
         {
-            Debug.Log($"[GameManager] 게임 시작 전 MyPlayerID 확인: {PlayerManager.Instance.MyPlayerID}, ConnectedUserID: {NetworkManager.Instance.ConnectedUserID}, CreatedRoomID: {NetworkManager.Instance.CreatedRoomID}");
+            int connectedUserID = NetworkManager.Instance.ConnectedUserID;
+            Debug.Log($"[GameManager] 게임 시작 전 ID 동기화: MyPlayerID={PlayerManager.Instance.MyPlayerID}, ConnectedUserID={connectedUserID}");
             
-            // CreatedRoomID를 기반으로 올바른 ID를 결정
-            int correctUserID = -1;
-            if (NetworkManager.Instance._gamePlayerList != null && NetworkManager.Instance._gamePlayerList.Count > 0)
+            // ConnectedUserID가 유효하면 MyPlayerID와 동기화
+            if (connectedUserID != -1)
             {
-                // 방장인 경우: 첫 번째 플레이어를 자신의 것으로 설정
-                if (NetworkManager.Instance.CreatedRoomID != -1)
+                // ConnectedUserID가 플레이어 목록에 있는지 확인
+                bool isValidID = false;
+                if (NetworkManager.Instance._gamePlayerList != null)
                 {
-                    correctUserID = NetworkManager.Instance._gamePlayerList[0].UserID;
-                    Debug.Log($"[GameManager] 방장이므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, UserName='{NetworkManager.Instance._gamePlayerList[0].UserName}'");
+                    isValidID = NetworkManager.Instance._gamePlayerList.Exists(p => p.UserID == connectedUserID);
                 }
-                // 일반 유저인 경우: 두 번째 플레이어를 자신의 것으로 설정
-                else if (NetworkManager.Instance._gamePlayerList.Count >= 2)
+                
+                if (isValidID)
                 {
-                    correctUserID = NetworkManager.Instance._gamePlayerList[1].UserID;
-                    Debug.Log($"[GameManager] 일반 유저이므로 두 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, UserName='{NetworkManager.Instance._gamePlayerList[1].UserName}'");
-                }
-                // 플레이어가 1명만 있는 경우: 그 플레이어를 자신의 것으로 설정
-                else if (NetworkManager.Instance._gamePlayerList.Count == 1)
-                {
-                    correctUserID = NetworkManager.Instance._gamePlayerList[0].UserID;
-                    Debug.Log($"[GameManager] 플레이어가 1명만 있으므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, UserName='{NetworkManager.Instance._gamePlayerList[0].UserName}'");
-                }
-            }
-            
-            // 올바른 ID가 결정되었고, 현재 MyPlayerID와 다르면 수정
-            if (correctUserID != -1)
-            {
-                if (PlayerManager.Instance.MyPlayerID != correctUserID)
-                {
-                    Debug.LogWarning($"[GameManager] ⚠️ MyPlayerID({PlayerManager.Instance.MyPlayerID})가 올바르지 않습니다. 올바른 ID({correctUserID})로 수정합니다.");
-                    PlayerManager.Instance.SetMyPlayerID(correctUserID);
-                    NetworkManager.Instance.ConnectedUserID = correctUserID;
-                    Debug.Log($"[GameManager] ✅ MyPlayerID를 올바른 값으로 수정: {correctUserID}");
+                    // MyPlayerID를 ConnectedUserID와 동기화
+                    if (PlayerManager.Instance.MyPlayerID != connectedUserID)
+                    {
+                        Debug.Log($"[GameManager] ✅ MyPlayerID를 ConnectedUserID와 동기화: {PlayerManager.Instance.MyPlayerID} -> {connectedUserID}");
+                        PlayerManager.Instance.SetMyPlayerID(connectedUserID);
+                    }
+                    else
+                    {
+                        Debug.Log($"[GameManager] ✅ MyPlayerID가 이미 ConnectedUserID와 동기화되어 있습니다: {connectedUserID}");
+                    }
                 }
                 else
                 {
-                    Debug.Log($"[GameManager] ✅ MyPlayerID가 이미 올바릅니다: {correctUserID}");
-                }
-            }
-            else if (PlayerManager.Instance.MyPlayerID == -1)
-            {
-                // MyPlayerID가 -1이고 올바른 ID를 찾지 못한 경우
-                Debug.LogError($"[GameManager] ❌ 플레이어 목록에서 자신을 찾지 못함. CreatedRoomID: {NetworkManager.Instance.CreatedRoomID}, 플레이어 수: {NetworkManager.Instance._gamePlayerList?.Count ?? 0}");
-                if (NetworkManager.Instance._gamePlayerList != null)
-                {
-                    Debug.LogError($"[GameManager] 플레이어 목록:");
-                    foreach (var playerInfo in NetworkManager.Instance._gamePlayerList)
+                    Debug.LogError($"[GameManager] ❌ ConnectedUserID({connectedUserID})가 플레이어 목록에 없습니다!");
+                    if (NetworkManager.Instance._gamePlayerList != null)
                     {
-                        Debug.LogError($"[GameManager]   - UserID: {playerInfo.UserID}, UserName: '{playerInfo.UserName}'");
+                        Debug.LogError($"[GameManager] 플레이어 목록:");
+                        foreach (var playerInfo in NetworkManager.Instance._gamePlayerList)
+                        {
+                            Debug.LogError($"[GameManager]   - UserID: {playerInfo.UserID}, UserName: '{playerInfo.UserName}'");
+                        }
                     }
                 }
             }
-            
-            // MyPlayerID가 설정되었는지 최종 확인
-            if (PlayerManager.Instance.MyPlayerID == -1)
+            else
             {
-                Debug.LogError($"[GameManager] ❌❌❌ MyPlayerID가 여전히 -1입니다! isLocalPlayer가 제대로 설정되지 않을 수 있습니다!");
+                Debug.LogError($"[GameManager] ❌ ConnectedUserID가 -1입니다! 플레이어 ID를 설정할 수 없습니다.");
             }
             
-            Debug.Log($"[GameManager] 최종 MyPlayerID: {PlayerManager.Instance.MyPlayerID}, ConnectedUserID: {NetworkManager.Instance.ConnectedUserID}");
-            
-            // isLocalPlayer 상태 업데이트 (MyPlayerID가 설정된 후에만 호출)
+            // 최종 확인 및 isLocalPlayer 상태 업데이트
             if (PlayerManager.Instance.MyPlayerID != -1)
             {
+                Debug.Log($"[GameManager] 최종 ID: MyPlayerID={PlayerManager.Instance.MyPlayerID}, ConnectedUserID={NetworkManager.Instance.ConnectedUserID}");
                 PlayerManager.Instance.UpdatePlayerLocalStatus();
             }
             else
             {
-                Debug.LogError($"[GameManager] ❌ MyPlayerID가 -1이므로 UpdatePlayerLocalStatus()를 호출하지 않습니다!");
+                Debug.LogError($"[GameManager] ❌ MyPlayerID가 -1입니다! isLocalPlayer가 제대로 설정되지 않을 수 있습니다!");
             }
         }
 
         // 첫 턴 플레이어에게 컨트롤 권한 부여
         // ID 430을 기다리지 않고, ProcessGameStartNotify에서 설정된 _currentTurnPlayerID를 사용
-        if (NetworkManager.Instance != null)
+        if (NetworkManager.Instance != null && PlayerManager.Instance != null)
         {
             int firstTurnPlayerID = NetworkManager.Instance.GetCurrentTurnPlayerID();
             int myUserID = NetworkManager.Instance.ConnectedUserID;
-            int myPlayerID = PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1;
+            int myPlayerID = PlayerManager.Instance.MyPlayerID;
             
-            Debug.Log($"[GameManager] 첫 턴 플레이어: {firstTurnPlayerID}, 내 UserID: {myUserID}, MyPlayerID: {myPlayerID}");
+            Debug.Log($"[GameManager] 첫 턴 설정: FirstTurnPlayerID={firstTurnPlayerID}, ConnectedUserID={myUserID}, MyPlayerID={myPlayerID}");
 
             // 모든 플레이어에게 턴 정보 업데이트
-            foreach (var playerInfo in NetworkManager.Instance._gamePlayerList)
+            if (NetworkManager.Instance._gamePlayerList != null)
             {
-                var playerObj = PlayerManager.Instance.GetPlayerById(playerInfo.UserID);
-                if (playerObj != null)
+                foreach (var playerInfo in NetworkManager.Instance._gamePlayerList)
                 {
-                    var controller = playerObj.GetComponent<PlayerController>();
-                    if (controller != null)
+                    var playerObj = PlayerManager.Instance.GetPlayerById(playerInfo.UserID);
+                    if (playerObj != null)
                     {
-                        // 자기 턴이고 로컬 플레이어인 경우에만 컨트롤 가능
-                        bool isMyTurn = (playerInfo.UserID == firstTurnPlayerID && playerInfo.UserID == myUserID);
-                        controller.SetCanControl(isMyTurn);
-                        Debug.Log($"[GameManager] Player {playerInfo.UserID} - isLocalPlayer: {controller.isLocalPlayer}, isMyTurn: {isMyTurn}, 컨트롤 권한: {isMyTurn && controller.isLocalPlayer}");
+                        var controller = playerObj.GetComponent<PlayerController>();
+                        if (controller != null)
+                        {
+                            // ConnectedUserID를 기준으로 로컬 플레이어 판단
+                            // 자기 턴이고 로컬 플레이어인 경우에만 컨트롤 가능
+                            bool isLocalPlayer = (playerInfo.UserID == myUserID && myUserID != -1);
+                            bool isMyTurn = (playerInfo.UserID == firstTurnPlayerID);
+                            bool canControl = isLocalPlayer && isMyTurn;
+                            
+                            controller.SetCanControl(canControl);
+                            Debug.Log($"[GameManager] Player {playerInfo.UserID}: isLocal={isLocalPlayer}, isMyTurn={isMyTurn}, canControl={canControl}");
+                        }
                     }
                 }
             }
@@ -260,10 +237,7 @@ public class GameManager : MonoBehaviour
             Debug.Log($"[GameManager] 초기 턴 설정 완료. ID 430 (Turn Start Notify) 수신 시 추가 업데이트됩니다.");
             
             // 플레이어 생성이 완료되었으므로, 보류된 턴 정보가 있으면 적용
-            if (NetworkManager.Instance != null)
-            {
-                NetworkManager.Instance.ApplyPendingTurnControl();
-            }
+            NetworkManager.Instance.ApplyPendingTurnControl();
         }
     }
 

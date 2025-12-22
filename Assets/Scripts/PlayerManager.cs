@@ -60,9 +60,11 @@ public class PlayerManager : MonoBehaviour
         // 4. [핵심 추가] 생성되자마자 ID와 팀 색상을 부여합니다.
         if (controller != null)
         {
-            // MyPlayerID와 비교하여 로컬 여부 결정
-            bool isLocal = (playerID == MyPlayerID && MyPlayerID != -1);
-            Debug.Log($"[PlayerManager] AddPlayer - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, isLocal: {isLocal}");
+            // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 로컬 플레이어 판단
+            // MyPlayerID는 ConnectedUserID와 동기화되어 있으므로 둘 다 확인
+            int connectedUserID = NetworkManager.Instance != null ? NetworkManager.Instance.ConnectedUserID : -1;
+            bool isLocal = (playerID == connectedUserID && connectedUserID != -1) || (playerID == MyPlayerID && MyPlayerID != -1);
+            Debug.Log($"[PlayerManager] AddPlayer - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, ConnectedUserID: {connectedUserID}, isLocal: {isLocal}");
             controller.SetPlayerID(playerID, isLocal);
             
             // 5. [중요] 모든 플레이어의 초기 위치를 _targetPosition으로 설정하여 잘못된 위치로 이동하는 것을 방지
@@ -94,15 +96,17 @@ public class PlayerManager : MonoBehaviour
             
             if (controller != null)
             {
-                bool isLocal = (playerID == MyPlayerID && MyPlayerID != -1);
+                // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 로컬 플레이어 판단
+                int connectedUserID = NetworkManager.Instance != null ? NetworkManager.Instance.ConnectedUserID : -1;
+                bool isLocal = (playerID == connectedUserID && connectedUserID != -1) || (playerID == MyPlayerID && MyPlayerID != -1);
                 if (controller.isLocalPlayer != isLocal)
                 {
-                    Debug.Log($"[PlayerManager] UpdatePlayerLocalStatus - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, Updating isLocal: {isLocal} -> {isLocal}");
+                    Debug.Log($"[PlayerManager] UpdatePlayerLocalStatus - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, ConnectedUserID: {connectedUserID}, Updating isLocal: {controller.isLocalPlayer} -> {isLocal}");
                     controller.SetPlayerID(playerID, isLocal);
                 }
                 else
                 {
-                    Debug.Log($"[PlayerManager] UpdatePlayerLocalStatus - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, isLocal: {isLocal} (변경 없음)");
+                    Debug.Log($"[PlayerManager] UpdatePlayerLocalStatus - PlayerID: {playerID}, MyPlayerID: {MyPlayerID}, ConnectedUserID: {connectedUserID}, isLocal: {isLocal} (변경 없음)");
                 }
             }
         }

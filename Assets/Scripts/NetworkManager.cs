@@ -966,35 +966,19 @@ public class NetworkManager : MonoBehaviour
             {
                 var playerList = RoomManager.Instance.GetPlayerList();
                 
-                // 플레이어 목록을 방장 우선으로 정렬
-                // CreatedRoomID를 가진 클라이언트가 방장이므로, 그 UserID를 가진 플레이어를 첫 번째로 이동
+                // [핵심 수정] 모든 클라이언트에서 동일한 순서를 보장하기 위해 PlayerID로 정렬
+                // 이렇게 하면 모든 클라이언트에서 동일한 플레이어 순서, 색상, 위치를 보장할 수 있음
                 var sortedPlayerList = new List<PlayerReadyData>(playerList);
                 
-                // 방장 찾기: CreatedRoomID를 가진 클라이언트의 UserID가 방장
-                if (CreatedRoomID != -1 && ConnectedUserID != -1)
-                {
-                    // 내가 방장이므로, 내 UserID를 가진 플레이어를 첫 번째로 이동
-                    var hostPlayer = sortedPlayerList.Find(p => p.PlayerID == ConnectedUserID);
-                    if (hostPlayer != null)
-                    {
-                        sortedPlayerList.Remove(hostPlayer);
-                        sortedPlayerList.Insert(0, hostPlayer);
-                        Debug.Log($"[ProcessGameStartNotify] ✅ 방장 정렬 완료: UserID={hostPlayer.PlayerID}를 첫 번째로 이동");
-                    }
-            }
-            else
-            {
-                    // 일반 유저인 경우, 방장을 찾아서 첫 번째로 이동
-                    // 서버에서 방장 정보를 받지 못했으므로, 첫 번째 플레이어를 방장으로 가정
-                    Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ CreatedRoomID가 -1이므로 첫 번째 플레이어를 방장으로 가정");
-                }
+                // PlayerID 오름차순으로 정렬 (모든 클라이언트에서 동일한 순서 보장)
+                sortedPlayerList.Sort((a, b) => a.PlayerID.CompareTo(b.PlayerID));
                 
                 _gamePlayerList.Clear();
                 foreach (var player in sortedPlayerList)
                 {
                     _gamePlayerList.Add(new PlayerInfo(player.PlayerID, player.PlayerName));
                 }
-                Debug.Log($"[ProcessGameStartNotify] 게임 시작 플레이어 목록: {_gamePlayerList.Count}명 (방장 우선 정렬 완료)");
+                Debug.Log($"[ProcessGameStartNotify] 게임 시작 플레이어 목록: {_gamePlayerList.Count}명 (PlayerID 오름차순 정렬 완료)");
                 Debug.Log($"[ProcessGameStartNotify] 현재 ConnectedUserID: {ConnectedUserID}, CreatedRoomID: {CreatedRoomID}");
                 
                 // 플레이어 목록 상세 로그 출력
@@ -1029,36 +1013,265 @@ public class NetworkManager : MonoBehaviour
                     }
                 }
                 
-                // _myUniqueUserName으로 찾지 못한 경우, CreatedRoomID와 FirstTurnUserID를 기반으로 결정
+                // _myUniqueUserName으로 찾지 못한 경우, 다른 방법으로 식별
                 if (correctUserID == -1)
                 {
-                    // 이미 ConnectedUserID가 설정되어 있으면 그것을 사용 (ProcessUserEnterNotify에서 설정됨)
+                    // [핵심 수정] 이미 ConnectedUserID가 설정되어 있으면 그것을 사용
+                    // (일반 유저는 UserEnter Notify에서 _firstUserEnterID를 저장했을 수 있음)
                     if (ConnectedUserID != -1)
                     {
                         correctUserID = ConnectedUserID;
                         Debug.Log($"[ProcessGameStartNotify] ConnectedUserID가 이미 설정되어 있으므로 사용: UserID={correctUserID}");
                     }
-                    // ConnectedUserID가 설정되지 않은 경우, CreatedRoomID를 기반으로 결정
-                    else if (CreatedRoomID != -1)
+                    // [핵심 수정] 일반 유저는 UserEnter Notify에서 저장한 _firstUserEnterID 사용
+                    else if (CreatedRoomID == -1 && _hasReceivedUserEnter && _firstUserEnterID != -1)
                     {
-                        // 방장인 경우: 첫 번째 플레이어를 자신의 것으로 설정
-                        if (sortedPlayerList.Count > 0)
+                        // _firstUserEnterID가 플레이어 목록에 있는지 확인
+                        bool isValidID = sortedPlayerList.Exists(p => p.PlayerID == _firstUserEnterID);
+                        if (isValidID)
                         {
-                            correctUserID = sortedPlayerList[0].PlayerID;
-                            Debug.Log($"[ProcessGameStartNotify] 방장이므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, FirstTurnUserID={firstTurnUserID}");
+                            correctUserID = _firstUserEnterID;
+                            Debug.Log($"[ProcessGameStartNotify] 일반 유저: UserEnter Notify에서 저장한 ID 사용: UserID={correctUserID}");
+                        }
+                        else
+                        {
+                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 저장된 _firstUserEnterID({_firstUserEnterID})가 플레이어 목록에 없습니다.");
                         }
                     }
-                    // 일반 유저인 경우: 두 번째 플레이어를 자신의 것으로 설정
-                    else if (sortedPlayerList.Count >= 2)
+                    // [핵심 수정] 방장은 플레이어 목록에서 자신을 찾기
+                    // 방장은 UserEnter Notify를 통해 자신의 ID를 설정하지 않았으므로, 
+                    // 플레이어 목록에서 RoomManager의 플레이어 목록과 비교하여 식별
+                    else if (CreatedRoomID != -1)
                     {
-                        correctUserID = sortedPlayerList[1].PlayerID;
-                        Debug.Log($"[ProcessGameStartNotify] 일반 유저이므로 두 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}, FirstTurnUserID={firstTurnUserID}");
+                        // RoomManager에서 자신의 정보를 찾기
+                        if (RoomManager.Instance != null)
+                        {
+                            var roomPlayerList = RoomManager.Instance.GetPlayerList();
+                            // RoomManager의 플레이어 목록과 GameStartNotify의 플레이어 목록을 비교
+                            foreach (var roomPlayer in roomPlayerList)
+                            {
+                                // RoomManager의 플레이어 이름과 GameStartNotify의 플레이어 이름 비교
+                                var matchedPlayer = sortedPlayerList.Find(p => 
+                                    p.PlayerID == roomPlayer.PlayerID || 
+                                    (p.PlayerName != null && roomPlayer.PlayerName != null && 
+                                     p.PlayerName.Trim() == roomPlayer.PlayerName.Trim()));
+                                
+                                if (matchedPlayer != null)
+                                {
+                                    // RoomManager에서 자신을 찾았는지 확인 (ConnectedUserName과 비교)
+                                    if (roomPlayer.PlayerName != null && ConnectedUserName != null &&
+                                        roomPlayer.PlayerName.Trim() == ConnectedUserName.Trim())
+                                    {
+                                        correctUserID = matchedPlayer.PlayerID;
+                                        Debug.Log($"[ProcessGameStartNotify] ✅ 방장: RoomManager를 통해 자신을 찾음: UserID={correctUserID}, UserName='{matchedPlayer.PlayerName}'");
+                                        break;
+                                    }
+                                }
+                            }
+                            
+                            // RoomManager로 찾지 못한 경우, 첫 번째 플레이어를 방장으로 가정 (최후의 수단)
+                            if (correctUserID == -1 && sortedPlayerList.Count > 0)
+                            {
+                                correctUserID = sortedPlayerList[0].PlayerID;
+                                Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 방장: RoomManager로 찾지 못하여 첫 번째 플레이어를 자신으로 가정: UserID={correctUserID}");
+                            }
+                        }
+                        else
+                        {
+                            // RoomManager가 없는 경우, 첫 번째 플레이어를 방장으로 가정
+                            if (sortedPlayerList.Count > 0)
+                            {
+                                correctUserID = sortedPlayerList[0].PlayerID;
+                                Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 방장: RoomManager가 없어 첫 번째 플레이어를 자신으로 가정: UserID={correctUserID}");
+                            }
+                        }
                     }
-                    // 플레이어가 1명만 있는 경우: 그 플레이어를 자신의 것으로 설정
-                    else if (sortedPlayerList.Count == 1)
+                    // [핵심 수정] 일반 유저도 _firstUserEnterID로 찾지 못한 경우, 
+                    // RoomManager의 플레이어 목록과 비교하여 자신을 찾기
+                    else
                     {
-                        correctUserID = sortedPlayerList[0].PlayerID;
-                        Debug.Log($"[ProcessGameStartNotify] 플레이어가 1명만 있으므로 첫 번째 플레이어를 자신의 것으로 설정: UserID={correctUserID}");
+                        // 1단계: UserName으로 직접 비교
+                        if (!string.IsNullOrEmpty(ConnectedUserName))
+                        {
+                            string trimmedConnectedUserName = ConnectedUserName.Trim();
+                            foreach (var player in sortedPlayerList)
+                            {
+                                if (player.PlayerName != null && player.PlayerName.Trim() == trimmedConnectedUserName)
+                                {
+                                    correctUserID = player.PlayerID;
+                                    Debug.Log($"[ProcessGameStartNotify] ✅ 일반 유저: UserName으로 자신을 찾음: UserID={correctUserID}, UserName='{player.PlayerName}'");
+                                    break;
+                                }
+                            }
+                        }
+                        
+                        // 2단계: RoomManager의 플레이어 목록과 비교
+                        if (correctUserID == -1 && RoomManager.Instance != null)
+                        {
+                            var roomPlayerList = RoomManager.Instance.GetPlayerList();
+                            Debug.Log($"[ProcessGameStartNotify] RoomManager 플레이어 목록과 비교 시도. RoomManager 플레이어 수: {roomPlayerList.Count}, GameStart 플레이어 수: {sortedPlayerList.Count}");
+                            
+                            // RoomManager의 각 플레이어와 GameStartNotify의 플레이어 목록 비교
+                            foreach (var roomPlayer in roomPlayerList)
+                            {
+                                // RoomManager의 플레이어 이름이 ConnectedUserName과 일치하는지 확인
+                                if (roomPlayer.PlayerName != null && ConnectedUserName != null)
+                                {
+                                    string trimmedRoomPlayerName = roomPlayer.PlayerName.Trim();
+                                    string trimmedConnectedUserName = ConnectedUserName.Trim();
+                                    
+                                    // 정확한 일치 또는 부분 일치 확인
+                                    bool nameMatches = trimmedRoomPlayerName == trimmedConnectedUserName ||
+                                                       trimmedRoomPlayerName.Contains(trimmedConnectedUserName) ||
+                                                       trimmedConnectedUserName.Contains(trimmedRoomPlayerName);
+                                    
+                                    if (nameMatches)
+                                    {
+                                        // 일치하는 플레이어를 GameStartNotify 목록에서 찾기
+                                        var matchedPlayer = sortedPlayerList.Find(p => 
+                                            p.PlayerID == roomPlayer.PlayerID ||
+                                            (p.PlayerName != null && roomPlayer.PlayerName != null &&
+                                             p.PlayerName.Trim() == roomPlayer.PlayerName.Trim()));
+                                        
+                                        if (matchedPlayer != null)
+                                        {
+                                            correctUserID = matchedPlayer.PlayerID;
+                                            Debug.Log($"[ProcessGameStartNotify] ✅ 일반 유저: RoomManager를 통해 자신을 찾음: UserID={correctUserID}, RoomManager UserName='{roomPlayer.PlayerName}', GameStart UserName='{matchedPlayer.PlayerName}'");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // 3단계: RoomManager의 플레이어 ID로 직접 매칭 (UserName 비교 실패 시)
+                            if (correctUserID == -1)
+                            {
+                                // RoomManager의 플레이어 목록에서 자신을 찾기
+                                // ConnectedUserName과 부분 일치하는 플레이어 찾기
+                                foreach (var roomPlayer in roomPlayerList)
+                                {
+                                    if (roomPlayer.PlayerName != null && ConnectedUserName != null)
+                                    {
+                                        string trimmedRoomPlayerName = roomPlayer.PlayerName.Trim();
+                                        string trimmedConnectedUserName = ConnectedUserName.Trim();
+                                        
+                                        // 부분 문자열 일치 확인 (더 관대한 매칭)
+                                        if (trimmedRoomPlayerName.Contains(trimmedConnectedUserName) ||
+                                            trimmedConnectedUserName.Contains(trimmedRoomPlayerName) ||
+                                            trimmedRoomPlayerName.StartsWith(trimmedConnectedUserName) ||
+                                            trimmedConnectedUserName.StartsWith(trimmedRoomPlayerName))
+                                        {
+                                            // GameStartNotify 목록에서 해당 ID 찾기
+                                            var matchedPlayer = sortedPlayerList.Find(p => p.PlayerID == roomPlayer.PlayerID);
+                                            if (matchedPlayer != null)
+                                            {
+                                                correctUserID = matchedPlayer.PlayerID;
+                                                Debug.Log($"[ProcessGameStartNotify] ✅ 일반 유저: RoomManager ID 매칭으로 자신을 찾음 (부분 일치): UserID={correctUserID}, RoomManager UserName='{roomPlayer.PlayerName}', GameStart UserName='{matchedPlayer.PlayerName}'");
+                                                break;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 4단계: 최후의 수단 - RoomManager의 플레이어 목록에서 자신을 찾기
+                        // RoomManager에는 자신의 정보가 있을 것이므로, GameStartNotify 목록과 매칭
+                        if (correctUserID == -1 && RoomManager.Instance != null)
+                        {
+                            var roomPlayerList = RoomManager.Instance.GetPlayerList();
+                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 일반 유저: 모든 방법으로 자신을 찾지 못했습니다. RoomManager 최후의 수단 사용.");
+                            Debug.LogWarning($"[ProcessGameStartNotify] RoomManager 플레이어 수: {roomPlayerList.Count}, GameStart 플레이어 수: {sortedPlayerList.Count}");
+                            
+                            // RoomManager의 플레이어 목록에서 자신을 찾기
+                            // ConnectedUserName과 부분 일치하는 플레이어 찾기
+                            foreach (var roomPlayer in roomPlayerList)
+                            {
+                                if (roomPlayer.PlayerName != null && ConnectedUserName != null)
+                                {
+                                    string trimmedRoomPlayerName = roomPlayer.PlayerName.Trim();
+                                    string trimmedConnectedUserName = ConnectedUserName.Trim();
+                                    
+                                    // 더 관대한 매칭: 시작 부분 일치 또는 공통 부분 확인
+                                    bool mightBeMe = trimmedRoomPlayerName.StartsWith(trimmedConnectedUserName.Substring(0, Math.Min(10, trimmedConnectedUserName.Length))) ||
+                                                      trimmedConnectedUserName.StartsWith(trimmedRoomPlayerName.Substring(0, Math.Min(10, trimmedRoomPlayerName.Length))) ||
+                                                      trimmedRoomPlayerName.Contains("Client_") && trimmedConnectedUserName.Contains("Client_");
+                                    
+                                    if (mightBeMe)
+                                    {
+                                        // GameStartNotify 목록에서 해당 ID 찾기
+                                        var matchedPlayer = sortedPlayerList.Find(p => p.PlayerID == roomPlayer.PlayerID);
+                                        if (matchedPlayer != null)
+                                        {
+                                            correctUserID = matchedPlayer.PlayerID;
+                                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 일반 유저: RoomManager 최후의 수단으로 자신을 찾음 (부분 일치): UserID={correctUserID}, RoomManager UserName='{roomPlayer.PlayerName}', GameStart UserName='{matchedPlayer.PlayerName}'");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        
+                        // 5단계: 최최후의 수단 - 플레이어 목록에서 아직 식별되지 않은 플레이어 찾기
+                        // (이미 식별된 플레이어를 제외하고 남은 플레이어 중 선택)
+                        if (correctUserID == -1)
+                        {
+                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 일반 유저: 모든 방법으로 자신을 찾지 못했습니다. 최최후의 수단 사용.");
+                            Debug.LogWarning($"[ProcessGameStartNotify] CreatedRoomID: {CreatedRoomID}, _firstUserEnterID: {_firstUserEnterID}, ConnectedUserName: '{ConnectedUserName}'");
+                            
+                            // RoomManager의 플레이어 목록과 GameStartNotify의 플레이어 목록을 비교
+                            // 방장이 이미 첫 번째로 식별되었다고 가정하고, 나머지 중에서 찾기
+                            if (RoomManager.Instance != null)
+                            {
+                                var roomPlayerList = RoomManager.Instance.GetPlayerList();
+                                
+                                // RoomManager의 플레이어 중 GameStartNotify 목록에 있는 플레이어 찾기
+                                // 방장(첫 번째)을 제외하고 나머지 중에서 찾기
+                                for (int i = 1; i < sortedPlayerList.Count && i < roomPlayerList.Count; i++)
+                                {
+                                    // RoomManager의 i번째 플레이어가 GameStartNotify의 i번째 플레이어와 ID가 일치하는지 확인
+                                    if (sortedPlayerList[i].PlayerID == roomPlayerList[i].PlayerID)
+                                    {
+                                        // 순서가 일치하는 경우, 이 플레이어가 자신일 가능성이 높음
+                                        // 하지만 이는 매우 불안정하므로 경고와 함께 사용
+                                        correctUserID = sortedPlayerList[i].PlayerID;
+                                        Debug.LogWarning($"[ProcessGameStartNotify] ⚠️⚠️⚠️ 일반 유저: 순서 기반 추정으로 자신을 찾음 (불안정): UserID={correctUserID}, Index={i}");
+                                        Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 이 방법은 불안정하므로 서버 수정(로그인/방입장 시 UserID 반환)을 강력히 권장합니다.");
+                                        break;
+                                    }
+                                }
+                                
+                                // 순서 기반으로도 찾지 못한 경우, RoomManager의 플레이어 중 아직 매칭되지 않은 플레이어 찾기
+                                if (correctUserID == -1)
+                                {
+                                    foreach (var roomPlayer in roomPlayerList)
+                                    {
+                                        // GameStartNotify 목록에서 해당 ID가 있는지 확인
+                                        var matchedPlayer = sortedPlayerList.Find(p => p.PlayerID == roomPlayer.PlayerID);
+                                        if (matchedPlayer != null)
+                                        {
+                                            // 이 플레이어가 아직 식별되지 않았다면 자신일 가능성
+                                            // (다른 클라이언트가 이미 자신을 식별했다고 가정)
+                                            correctUserID = matchedPlayer.PlayerID;
+                                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️⚠️⚠️ 일반 유저: RoomManager 플레이어 목록 기반 추정 (매우 불안정): UserID={correctUserID}");
+                                            Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 이 방법은 매우 불안정하므로 서버 수정(로그인/방입장 시 UserID 반환)을 강력히 권장합니다.");
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            // 여전히 찾지 못한 경우
+                            if (correctUserID == -1)
+                            {
+                                Debug.LogError($"[ProcessGameStartNotify] ❌❌❌ 자신을 찾지 못했습니다. 게임을 계속할 수 없습니다.");
+                                Debug.LogError($"[ProcessGameStartNotify] 플레이어 목록:");
+                                foreach (var player in sortedPlayerList)
+                                {
+                                    Debug.LogError($"[ProcessGameStartNotify]   - UserID: {player.PlayerID}, UserName: '{player.PlayerName}'");
+                                }
+                            }
+                        }
                     }
                 }
                 
@@ -1172,48 +1385,40 @@ public class NetworkManager : MonoBehaviour
             }
             else if (ConnectedUserID == -1)
             {
-                // 아직 자신의 UserID를 모르는 경우
-                // CreatedRoomID를 확인하여 방장인지 판단
-                // 방장이면 첫 번째로 받은 UserEnter Notify를 자신의 것으로 설정
-                // 일반 유저면 첫 번째 UserEnter ID만 저장하고, ProcessGameStartNotify에서 확정
-                if (!_hasReceivedUserEnter)
+                // [핵심 수정] 방장은 UserEnter Notify를 통해 자신의 ID를 설정하지 않음
+                // 방장은 다른 유저의 입장 알림을 받을 수 있으므로, 이를 자신의 ID로 오인하면 안 됨
+                // 방장의 ID는 ProcessGameStartNotify에서 플레이어 목록을 통해 식별
+                
+                // 일반 유저만 UserEnter Notify를 통해 자신의 ID를 저장
+                // 단, UserName이 일치하는 경우에만 저장 (정확성 보장)
+                if (CreatedRoomID == -1) // 일반 유저인 경우
                 {
-                    _firstUserEnterID = userID;
-                    _hasReceivedUserEnter = true;
-                    
-                    // 방장인 경우에만 즉시 설정 (CreatedRoomID가 설정되어 있으면 방장)
-                    if (CreatedRoomID != -1)
+                    // UserName이 일치하는 경우에만 자신의 ID로 저장
+                    if (userNameMatches)
                     {
+                        _firstUserEnterID = userID;
+                        _hasReceivedUserEnter = true;
                         ConnectedUserID = userID;
                         isMyUser = true;
-                        Debug.Log($"[UserEnter Notify] ✅ 방장이므로 첫 번째 UserEnter Notify를 자신의 것으로 설정: UserID={userID}, UserName='{userName}'");
+                        Debug.Log($"[UserEnter Notify] ✅ 일반 유저: UserName 일치로 자신의 ID 저장: UserID={userID}, UserName='{userName}'");
+                    }
+                    else if (!_hasReceivedUserEnter)
+                    {
+                        // UserName이 일치하지 않지만 첫 번째 UserEnter인 경우, 임시로 저장
+                        // (ProcessGameStartNotify에서 최종 확인)
+                        _firstUserEnterID = userID;
+                        _hasReceivedUserEnter = true;
+                        Debug.Log($"[UserEnter Notify] 일반 유저: 첫 번째 UserEnter Notify 수신 (UserName 불일치): UserID={userID}, UserName='{userName}' (ProcessGameStartNotify에서 확정)");
                     }
                     else
                     {
-                        Debug.Log($"[UserEnter Notify] 첫 번째 UserEnter Notify 수신: UserID={userID}, UserName='{userName}' (일반 유저이므로 ProcessGameStartNotify에서 확정)");
+                        Debug.Log($"[UserEnter Notify] 일반 유저: 추가 UserEnter Notify 수신: UserID={userID}, UserName='{userName}' (이미 저장됨: {_firstUserEnterID})");
                     }
                 }
                 else
                 {
-                    // 이미 첫 번째 UserEnter를 받았다면, RoomManager의 플레이어 목록을 확인
-                    bool foundInRoomManager = false;
-                    if (RoomManager.Instance != null)
-                    {
-                        var playerList = RoomManager.Instance.GetPlayerList();
-                        // 방장이고, RoomManager에 플레이어가 1명만 있고, 그 플레이어의 ID가 _firstUserEnterID와 일치하면 자신
-                        if (CreatedRoomID != -1 && playerList.Count == 1 && playerList[0].PlayerID == _firstUserEnterID)
-                        {
-                            ConnectedUserID = _firstUserEnterID;
-                            isMyUser = true;
-                            foundInRoomManager = true;
-                            Debug.Log($"[UserEnter Notify] ✅ RoomManager에서 자신을 찾음 (방장, 첫 UserEnter ID 사용): UserID={_firstUserEnterID}");
-                        }
-                    }
-                    
-                    if (!foundInRoomManager)
-                    {
-                        Debug.LogWarning($"[UserEnter Notify] ⚠️ 자신을 찾지 못함. UserID: {userID}, UserName: '{userName}', _myUniqueUserName: '{_myUniqueUserName}'. ProcessGameStartNotify에서 다시 시도합니다.");
-                    }
+                    // 방장인 경우: UserEnter Notify를 통해 자신의 ID를 설정하지 않음
+                    Debug.Log($"[UserEnter Notify] 방장이므로 UserEnter Notify를 통해 자신의 ID를 설정하지 않음. UserID: {userID}, UserName: '{userName}' (ProcessGameStartNotify에서 식별)");
                 }
             }
             
@@ -1424,15 +1629,18 @@ public class NetworkManager : MonoBehaviour
                 var controller = playerObj.GetComponent<PlayerController>();
                 if (controller != null)
                 {
-                    // nextPlayerID는 서버에서 보낸 FD이므로, 이것이 UserID와 일치해야 함
+                    // nextPlayerID는 서버에서 보낸 UserID이므로, 이것이 ConnectedUserID와 일치해야 함
                     // 로컬 플레이어이고, 현재 턴이 로컬 플레이어의 턴이면 컨트롤 가능
-                    bool isLocalPlayer = (playerID == ConnectedUserID);
+                    // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 일관성 보장
+                    bool isLocalPlayer = (playerID == ConnectedUserID && ConnectedUserID != -1);
                     bool isCurrentTurn = (playerID == nextPlayerID);
                     bool canControl = isLocalPlayer && isCurrentTurn;
                     
                     Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
                     
-                    // 모든 플레이어에게 SetCanControl 호출 (로컬 플레이어이고 현재 턴이면 true, 아니면 false)
+                    // [핵심 수정] 모든 플레이어에게 SetCanControl 호출
+                    // 로컬 플레이어이고 현재 턴이면 true, 아니면 false
+                    // 이렇게 하면 한 번에 한 명의 플레이어만 컨트롤 가능
                     controller.SetCanControl(canControl);
                     
                     // 턴이 시작된 플레이어에게 OnTurnStart 호출
@@ -1469,12 +1677,12 @@ public class NetworkManager : MonoBehaviour
             Vector3 position = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
             Quaternion rotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
 
-            bool isLocalPlayer = (playerID == ConnectedUserID);
-            Debug.Log($"[PlayerMove Notify] ✅ 이동 동기화 수신! PlayerID: {playerID}, Pos: {position}, 내 UserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}");
+            // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 로컬 플레이어 판단
+            bool isLocalPlayer = (playerID == ConnectedUserID && ConnectedUserID != -1);
+            Debug.Log($"[PlayerMove Notify] ✅ 이동 동기화 수신! PlayerID: {playerID}, Pos: {position}, ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}");
 
             // 로컬 플레이어는 자신의 이동을 네트워크로부터 받지 않음 (직접 입력으로 제어)
-            // ConnectedUserID가 -1이거나 아직 설정되지 않은 경우도 체크
-            if (isLocalPlayer || (ConnectedUserID == -1 && PlayerManager.Instance != null && playerID == PlayerManager.Instance.MyPlayerID))
+            if (isLocalPlayer)
             {
                 Debug.Log($"[PlayerMove Notify] ⚠️ 로컬 플레이어({playerID})의 이동 알림을 무시합니다. 직접 입력으로 제어됩니다.");
                 return;
@@ -1522,13 +1730,13 @@ public class NetworkManager : MonoBehaviour
             Vector3 firePoint = new Vector3(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
             Quaternion fireRotation = new Quaternion(reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat());
 
-            bool isLocalPlayer = (playerID == ConnectedUserID);
+            // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 로컬 플레이어 판단
+            bool isLocalPlayer = (playerID == ConnectedUserID && ConnectedUserID != -1);
             Debug.Log($"[PlayerFire Notify] ✅✅✅✅✅ ID 420 수신! PlayerID: {playerID}, FirePoint: {firePoint}, FireRotation: {fireRotation}");
-            Debug.Log($"[PlayerFire Notify] 내 UserID: {ConnectedUserID}, MyPlayerID: {(PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1)}, isLocalPlayer: {isLocalPlayer}");
+            Debug.Log($"[PlayerFire Notify] ConnectedUserID: {ConnectedUserID}, MyPlayerID: {(PlayerManager.Instance != null ? PlayerManager.Instance.MyPlayerID : -1)}, isLocalPlayer: {isLocalPlayer}");
 
             // 로컬 플레이어는 자신의 발사를 네트워크로부터 받지 않음 (직접 입력으로 제어)
-            // ConnectedUserID가 -1이거나 아직 설정되지 않은 경우도 체크
-            if (isLocalPlayer || (ConnectedUserID == -1 && PlayerManager.Instance != null && playerID == PlayerManager.Instance.MyPlayerID))
+            if (isLocalPlayer)
             {
                 Debug.Log($"[PlayerFire Notify] ⚠️ 로컬 플레이어({playerID})의 발사 알림을 무시합니다. 직접 입력으로 제어됩니다.");
                 return;

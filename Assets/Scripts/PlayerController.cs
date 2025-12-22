@@ -17,6 +17,9 @@ public class PlayerController : MonoBehaviour
     public Transform firePoint;    // Barrel 끝에 만든 FirePoint 연결
     public float launchForce = 15f;
 
+    [Header("UI Settings")]
+    private GameObject _arrowIndicator; // 로컬 플레이어 탱크 위의 화살표 표시기
+
     [Header("Movement Settings")]
     public float moveSpeed = 5.0f;
     public float lerpSpeed = 25.0f; // 보간 속도
@@ -148,15 +151,69 @@ public class PlayerController : MonoBehaviour
             GameManager.Instance.CheckGameEnd();
         }
     }
+    // 플레이어별 고유 색상 배열 (최대 10명까지 지원)
+    private static readonly Color[] PlayerColors = new Color[]
+    {
+        new Color(0.2f, 0.4f, 1.0f),    // 파란색 (0)
+        new Color(1.0f, 0.2f, 0.2f),    // 빨간색 (1)
+        new Color(0.2f, 1.0f, 0.2f),    // 초록색 (2)
+        new Color(1.0f, 0.8f, 0.0f),    // 노란색 (3)
+        new Color(1.0f, 0.4f, 0.8f),    // 분홍색 (4)
+        new Color(0.6f, 0.2f, 1.0f),    // 보라색 (5)
+        new Color(0.0f, 1.0f, 1.0f),    // 청록색 (6)
+        new Color(1.0f, 0.6f, 0.2f),    // 주황색 (7)
+        new Color(0.4f, 0.8f, 0.4f),    // 연두색 (8)
+        new Color(0.8f, 0.6f, 0.4f),    // 갈색 (9)
+    };
+
+    // 플레이어 ID를 기반으로 색상을 가져오는 메서드
+    private Color GetPlayerColor(int playerID)
+    {
+        // 플레이어 목록에서 인덱스 찾기
+        int playerIndex = -1;
+        if (NetworkManager.Instance != null && NetworkManager.Instance._gamePlayerList != null)
+        {
+            for (int i = 0; i < NetworkManager.Instance._gamePlayerList.Count; i++)
+            {
+                if (NetworkManager.Instance._gamePlayerList[i].UserID == playerID)
+                {
+                    playerIndex = i;
+                    break;
+                }
+            }
+        }
+
+        // 인덱스를 찾지 못한 경우 플레이어 ID를 해시하여 색상 결정
+        if (playerIndex == -1)
+        {
+            playerIndex = Mathf.Abs(playerID) % PlayerColors.Length;
+            Debug.LogWarning($"[ApplyTankColors] 플레이어 목록에서 인덱스를 찾지 못했습니다. PlayerID: {playerID}, 해시 인덱스: {playerIndex}");
+        }
+        else
+        {
+            Debug.Log($"[ApplyTankColors] 플레이어 인덱스 찾음: PlayerID: {playerID}, Index: {playerIndex}");
+        }
+
+        // 인덱스를 색상 배열 크기로 모듈로 연산하여 안전하게 색상 선택
+        int colorIndex = playerIndex % PlayerColors.Length;
+        Color selectedColor = PlayerColors[colorIndex];
+        
+        Debug.Log($"[ApplyTankColors] PlayerID {playerID} -> ColorIndex {colorIndex} -> Color {selectedColor}");
+        return selectedColor;
+    }
+
     private void ApplyTankColors()
     {
         // 자식뿐만 아니라 모든 하위 렌더러를 가져옵니다.
         Renderer[] rens = GetComponentsInChildren<Renderer>(true);
 
-        Debug.Log($"[ApplyTankColors] 찾은 Renderer 개수: {rens.Length}, isLocalPlayer: {isLocalPlayer}");
+        Debug.Log($"[ApplyTankColors] 찾은 Renderer 개수: {rens.Length}, isLocalPlayer: {isLocalPlayer}, PlayerID: {playerID}");
 
         // 자기 자신의 Renderer 찾기 (메인 몸통)
         Renderer mainBodyRenderer = GetComponent<Renderer>();
+
+        // 플레이어별 고유 색상 가져오기
+        Color playerColor = GetPlayerColor(playerID);
 
         foreach (Renderer r in rens)
         {
@@ -191,9 +248,10 @@ public class PlayerController : MonoBehaviour
 
             if (isMainBody)
             {
-                targetColor = isLocalPlayer ? Color.blue : Color.red;
+                // 플레이어별 고유 색상 사용
+                targetColor = playerColor;
                 shouldApply = true;
-                Debug.Log($"[ApplyTankColors] 몸통 색상 적용: {objName} -> {targetColor}");
+                Debug.Log($"[ApplyTankColors] 몸통 색상 적용: {objName} -> {targetColor} (PlayerID: {playerID})");
             }
             else if (n.Contains("turret"))
             {
@@ -265,6 +323,9 @@ public class PlayerController : MonoBehaviour
                 CmdFire(); // 내 화면에서 발사 및 서버 알림
             }
         }
+        
+        // 화살표 표시기 업데이트
+        UpdateArrowIndicator();
     }
 
     void FixedUpdate()
@@ -566,9 +627,21 @@ public class PlayerController : MonoBehaviour
                 }
             }
 
-            // 텍스트와 색상 설정
-            nameTagText.text = $"Player {id}";
-            nameTagText.color = isLocal ? Color.cyan : Color.red;
+            // [핵심 수정] 모든 클라이언트에서 동일한 ID 표시 보장
+            // 플레이어 이름을 찾아서 표시 (없으면 ID만 표시)
+            string displayName = $"Player {id}";
+            if (NetworkManager.Instance != null && NetworkManager.Instance._gamePlayerList != null)
+            {
+                var playerInfo = NetworkManager.Instance._gamePlayerList.Find(p => p.UserID == id);
+                if (playerInfo != null && !string.IsNullOrEmpty(playerInfo.UserName))
+                {
+                    displayName = $"{playerInfo.UserName} ({id})";
+                }
+            }
+            
+            nameTagText.text = displayName;
+            // 로컬 플레이어는 청록색, 원격 플레이어는 흰색으로 표시 (가독성 향상)
+            nameTagText.color = isLocal ? Color.cyan : Color.white;
 
             // TextMeshPro 컴포넌트를 완전히 재초기화
             // 1. 컴포넌트 비활성화/활성화
@@ -601,6 +674,110 @@ public class PlayerController : MonoBehaviour
 
         // 탱크 색상 적용
         ApplyTankColors();
+        
+        // 로컬 플레이어일 때 화살표 표시기 생성
+        if (isLocal)
+        {
+            CreateArrowIndicator();
+        }
+    }
+    
+    // 로컬 플레이어 탱크 위에 화살표 표시기 생성
+    private void CreateArrowIndicator()
+    {
+        // Canvas 찾기
+        Canvas canvas = GetComponentInChildren<Canvas>(true);
+        if (canvas == null)
+        {
+            Debug.LogWarning($"[PlayerController] Canvas를 찾을 수 없어 화살표 표시기를 생성할 수 없습니다. PlayerID: {playerID}");
+            return;
+        }
+        
+        // hpBarSlider 찾기
+        if (hpBarSlider == null)
+        {
+            hpBarSlider = GetComponentInChildren<Slider>(true);
+        }
+        
+        // 화살표 GameObject 생성
+        GameObject arrowObj = new GameObject("ArrowIndicator");
+        arrowObj.transform.SetParent(canvas.transform, false);
+        
+        // RectTransform 설정
+        RectTransform arrowRect = arrowObj.AddComponent<RectTransform>();
+        
+        // hpBarSlider의 위치를 기준으로 체력바 위에 배치
+        if (hpBarSlider != null)
+        {
+            RectTransform hpBarRect = hpBarSlider.GetComponent<RectTransform>();
+            if (hpBarRect != null)
+            {
+                // 체력바 위에 배치 (Y 오프셋 추가)
+                arrowRect.anchorMin = new Vector2(0.5f, 0.5f);
+                arrowRect.anchorMax = new Vector2(0.5f, 0.5f);
+                arrowRect.pivot = new Vector2(0.5f, 0.5f);
+                arrowRect.anchoredPosition = new Vector2(hpBarRect.anchoredPosition.x, hpBarRect.anchoredPosition.y + 30f);
+                arrowRect.sizeDelta = new Vector2(40f, 40f);
+            }
+            else
+            {
+                // hpBarSlider가 없으면 기본 위치에 배치
+                arrowRect.anchorMin = new Vector2(0.5f, 0.5f);
+                arrowRect.anchorMax = new Vector2(0.5f, 0.5f);
+                arrowRect.pivot = new Vector2(0.5f, 0.5f);
+                arrowRect.anchoredPosition = new Vector2(0f, 50f);
+                arrowRect.sizeDelta = new Vector2(40f, 40f);
+            }
+        }
+        else
+        {
+            // hpBarSlider가 없으면 기본 위치에 배치
+            arrowRect.anchorMin = new Vector2(0.5f, 0.5f);
+            arrowRect.anchorMax = new Vector2(0.5f, 0.5f);
+            arrowRect.pivot = new Vector2(0.5f, 0.5f);
+            arrowRect.anchoredPosition = new Vector2(0f, 50f);
+            arrowRect.sizeDelta = new Vector2(40f, 40f);
+        }
+        
+        // TextMeshPro로 화살표 표시
+        TextMeshProUGUI arrowText = arrowObj.AddComponent<TextMeshProUGUI>();
+        arrowText.text = "▼"; // 아래쪽 화살표 유니코드
+        arrowText.fontSize = 36;
+        arrowText.color = new Color(1f, 0.8f, 0f, 1f); // 밝은 노란색
+        arrowText.alignment = TextAlignmentOptions.Center;
+        arrowText.fontStyle = FontStyles.Bold;
+        arrowText.raycastTarget = false; // 클릭 이벤트 방지
+        
+        // 폰트 설정
+        if (nameTagText != null && nameTagText.font != null)
+        {
+            arrowText.font = nameTagText.font;
+        }
+        else
+        {
+            // 기본 폰트 사용
+            arrowText.font = TMPro.TMP_Settings.defaultFontAsset;
+        }
+        
+        // Billboard 스크립트 추가 (카메라를 향하도록)
+        Billboard billboard = arrowObj.AddComponent<Billboard>();
+        
+        _arrowIndicator = arrowObj;
+        
+        // 초기 상태는 숨김 (자신의 턴이 아닐 때)
+        _arrowIndicator.SetActive(false);
+        
+        Debug.Log($"[PlayerController] 화살표 표시기 생성 완료: PlayerID={playerID}");
+    }
+    
+    // 화살표 표시기 업데이트 (턴 상태에 따라 표시/숨김)
+    private void UpdateArrowIndicator()
+    {
+        if (_arrowIndicator == null) return;
+        
+        // 로컬 플레이어이고 현재 턴일 때만 표시
+        bool shouldShow = isLocalPlayer && _canControl;
+        _arrowIndicator.SetActive(shouldShow);
     }
 
     public void SetCanControl(bool canControl)
@@ -609,6 +786,8 @@ public class PlayerController : MonoBehaviour
         if (!isLocalPlayer)
         {
             _canControl = false;
+            // 화살표 표시기 업데이트
+            UpdateArrowIndicator();
             return;
         }
         
@@ -617,6 +796,9 @@ public class PlayerController : MonoBehaviour
         // 중복 패킷 방지는 ProcessTurnStartNotify에서 _currentTurnPlayerID를 업데이트하는 시점으로 처리
         _canControl = canControl;
         Debug.Log($"[PlayerController] SetCanControl: {canControl} (PlayerID: {this.name}, isLocalPlayer: {isLocalPlayer})");
+        
+        // 화살표 표시기 업데이트
+        UpdateArrowIndicator();
     }
 
     public void OnTurnStart(int turnTimeLimitSec)
