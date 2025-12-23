@@ -1,0 +1,60 @@
+name: Deploy WebGL to GitHub Pages
+
+on:
+  push:
+    branches:
+      - deploy/webgl
+    paths:
+      - "WebGLBuild/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Check WebGL Build
+        id: check_build
+        run: |
+          if [ -d "WebGLBuild" ] && [ "$(ls -A WebGLBuild)" ]; then
+            echo "build_exists=true" >> $GITHUB_OUTPUT
+            echo "WebGL 빌드 폴더가 존재합니다"
+          else
+            echo "build_exists=false" >> $GITHUB_OUTPUT
+            echo "WebGL 빌드 폴더가 없습니다. Unity에서 WebGL 빌드를 먼저 생성해주세요."
+            echo "빌드 폴더: WebGLBuild/"
+          fi
+
+      - name: Upload artifact
+        if: steps.check_build.outputs.build_exists == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "./WebGLBuild"
+
+      - name: Deploy to GitHub Pages
+        if: steps.check_build.outputs.build_exists == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Build not found
+        if: steps.check_build.outputs.build_exists == 'false'
+        run: |
+          echo "::warning::WebGL 빌드 폴더가 없습니다. Unity에서 WebGL 빌드를 생성한 후 다시 시도해주세요."
+          exit 1

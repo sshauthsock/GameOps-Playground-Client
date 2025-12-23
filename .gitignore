@@ -8,6 +8,9 @@
 /[Oo]bj/
 /[Bb]uild/
 /[Bb]uilds/
+# WebGL 빌드는 GitHub Pages 배포를 위해 포함
+!/WebGLBuild/
+!/WebGLBuild/**
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 *.log
