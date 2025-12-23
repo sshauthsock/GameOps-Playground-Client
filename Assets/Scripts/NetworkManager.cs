@@ -93,7 +93,7 @@ public class NetworkManager : MonoBehaviour
     
     private void HandleWebSocketOpen()
     {
-        Debug.Log($"[Connect] ✅ WebSocket 연결 성공: ws://{serverIP}:{serverPort}");
+        Debug.Log($"[Connect] ✅ WebSocket 연결 성공: wss://{serverIP}:{serverPort}");
         
         // 로그인 요청 전송
         string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
@@ -412,10 +412,13 @@ public class NetworkManager : MonoBehaviour
 
 #if UNITY_WEBGL && !UNITY_EDITOR
             // WebGL: WebSocket 사용
-            Debug.Log($"[Connect] WebSocket 연결 시도 시작: ws://{ip}:{port}");
+            // HTTPS 페이지에서는 wss://를 사용해야 함 (Mixed Content 정책)
+            // GitHub Pages는 HTTPS이므로 항상 wss:// 사용
+            string protocol = "wss://";
+            string wsUrl = $"{protocol}{ip}:{port}";
+            Debug.Log($"[Connect] WebSocket 연결 시도 시작: {wsUrl}");
             try
             {
-                string wsUrl = $"ws://{ip}:{port}";
                 
                 // 콜백 함수 설정
                 _onWebSocketOpen = OnWebSocketOpen;
