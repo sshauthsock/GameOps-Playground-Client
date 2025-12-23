@@ -1,5 +1,5 @@
 {
   "serverIP": "switchback.proxy.rlwy.net",
   "serverPort": 36222,
-  "description": "WebGL 배포용 서버 설정. Railway 서버: gameops-playground-server-production.up.railway.app"
+  "description": "Railway 서버 설정. TCP 포트: 36222 (내부 7777), WebSocket 포트 확인 필요"
 }
