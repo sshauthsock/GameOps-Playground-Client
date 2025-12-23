@@ -35,8 +35,117 @@ public class NetworkManager : MonoBehaviour
 #endif
 
     public bool IS_DUMMY_MODE = false; // 실제 서버 연결 시 false, 테스트 시 true (실제 서버 모드로 설정됨)
+    
+#if UNITY_WEBGL && !UNITY_EDITOR
+    // WebGL: WebSocket 사용
+    [DllImport("__Internal")]
+    private static extern IntPtr WebSocket_Connect(string url, IntPtr onOpen, IntPtr onMessage, IntPtr onError, IntPtr onClose);
+    
+    [DllImport("__Internal")]
+    private static extern int WebSocket_Send(IntPtr wsId, IntPtr data, int length);
+    
+    [DllImport("__Internal")]
+    private static extern int WebSocket_GetReadyState(IntPtr wsId);
+    
+    [DllImport("__Internal")]
+    private static extern int WebSocket_Close(IntPtr wsId);
+    
+    [DllImport("__Internal")]
+    private static extern void WebSocket_FreeString(IntPtr ptr);
+    
+    private string _webSocketId = null;
+    private IntPtr _webSocketIdPtr = IntPtr.Zero;
+    private System.Action _onWebSocketOpen;
+    private System.Action<IntPtr, int> _onWebSocketMessage;
+    private System.Action _onWebSocketError;
+    private System.Action<int> _onWebSocketClose;
+    
+    // WebSocket 메시지 수신 콜백
+    [AOT.MonoPInvokeCallback(typeof(System.Action<IntPtr, int>))]
+    private static void OnWebSocketMessage(IntPtr dataPtr, int length)
+    {
+        if (Instance != null)
+        {
+            Instance.HandleWebSocketMessage(dataPtr, length);
+        }
+    }
+    
+    private void HandleWebSocketMessage(IntPtr dataPtr, int length)
+    {
+        byte[] packet = new byte[length];
+        Marshal.Copy(dataPtr, packet, 0, length);
+        
+        lock (_packetQueue)
+        {
+            _packetQueue.Enqueue(packet);
+        }
+    }
+    
+    // WebSocket 열림 콜백
+    [AOT.MonoPInvokeCallback(typeof(System.Action))]
+    private static void OnWebSocketOpen()
+    {
+        if (Instance != null)
+        {
+            Instance.HandleWebSocketOpen();
+        }
+    }
+    
+    private void HandleWebSocketOpen()
+    {
+        Debug.Log($"[Connect] ✅ WebSocket 연결 성공: wss://{serverIP}:{serverPort}");
+        
+        // 로그인 요청 전송
+        string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
+        SendLoginRequest(loginUserName);
+    }
+    
+    // WebSocket 오류 콜백
+    [AOT.MonoPInvokeCallback(typeof(System.Action))]
+    private static void OnWebSocketError()
+    {
+        if (Instance != null)
+        {
+            Instance.HandleWebSocketError();
+        }
+    }
+    
+    private void HandleWebSocketError()
+    {
+        Debug.LogError("[Connect] ❌ WebSocket 연결 오류");
+        _webSocketId = null;
+        if (_webSocketIdPtr != IntPtr.Zero)
+        {
+            WebSocket_FreeString(_webSocketIdPtr);
+            _webSocketIdPtr = IntPtr.Zero;
+        }
+    }
+    
+    // WebSocket 종료 콜백
+    [AOT.MonoPInvokeCallback(typeof(System.Action<int>))]
+    private static void OnWebSocketClose(int code)
+    {
+        if (Instance != null)
+        {
+            Instance.HandleWebSocketClose(code);
+        }
+    }
+    
+    private void HandleWebSocketClose(int code)
+    {
+        Debug.Log($"[Connect] WebSocket 연결 종료 (코드: {code})");
+        _webSocketId = null;
+        if (_webSocketIdPtr != IntPtr.Zero)
+        {
+            WebSocket_FreeString(_webSocketIdPtr);
+            _webSocketIdPtr = IntPtr.Zero;
+        }
+    }
+#else
+    // Editor: TCP 소켓 사용
     private TcpClient _client;
     private NetworkStream _stream;
+#endif
 
     private Thread _receiveThread;
     private bool _isRunning = true;
@@ -62,7 +171,7 @@ public class NetworkManager : MonoBehaviour
             // 연결 상태 주기적 확인 (1초마다)
             if (Time.frameCount % 60 == 0) // 대략 1초마다 (60fps 가정)
             {
-                bool isConnected = _client != null && _client.Connected;
+                bool isConnected = IsConnected();
                 if (!isConnected && !IS_DUMMY_MODE)
                 {
                     Debug.LogWarning($"[Update] ⚠️ 서버 연결이 끊어졌습니다! Connected: {isConnected}");
@@ -86,7 +195,7 @@ public class NetworkManager : MonoBehaviour
             if (_packetQueue.Count == 0 && Time.frameCount % 300 == 0 && UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex == 2)
             {
                 // 게임 씬에서 5초마다 패킷 큐 상태 확인
-                Debug.Log($"[Update] 게임 씬 - 패킷 큐 상태: {_packetQueue.Count}개, 연결 상태: {(_client != null && _client.Connected ? "연결됨" : "끊김")}, _currentTurnPlayerID: {_currentTurnPlayerID}");
+                Debug.Log($"[Update] 게임 씬 - 패킷 큐 상태: {_packetQueue.Count}개, 연결 상태: {(IsConnected() ? "연결됨" : "끊김")}, _currentTurnPlayerID: {_currentTurnPlayerID}");
             }
         }
     }
@@ -301,6 +410,54 @@ public class NetworkManager : MonoBehaviour
             // 기존 연결 정리
             Disconnect();
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+            // WebGL: WebSocket 사용
+            // HTTPS 페이지에서는 wss://를 사용해야 함 (Mixed Content 정책)
+            // GitHub Pages는 HTTPS이므로 항상 wss:// 사용
+            string protocol = "wss://";
+            string wsUrl = $"{protocol}{ip}:{port}";
+            Debug.Log($"[Connect] WebSocket 연결 시도 시작: {wsUrl}");
+            try
+            {
+                
+                // 콜백 함수 설정
+                _onWebSocketOpen = OnWebSocketOpen;
+                _onWebSocketMessage = OnWebSocketMessage;
+                _onWebSocketError = OnWebSocketError;
+                _onWebSocketClose = OnWebSocketClose;
+                
+                IntPtr onOpenPtr = Marshal.GetFunctionPointerForDelegate(_onWebSocketOpen);
+                IntPtr onMessagePtr = Marshal.GetFunctionPointerForDelegate(_onWebSocketMessage);
+                IntPtr onErrorPtr = Marshal.GetFunctionPointerForDelegate(_onWebSocketError);
+                IntPtr onClosePtr = Marshal.GetFunctionPointerForDelegate(_onWebSocketClose);
+                
+                // WebSocket 연결 생성
+                _webSocketIdPtr = WebSocket_Connect(wsUrl, onOpenPtr, onMessagePtr, onErrorPtr, onClosePtr);
+                
+                if (_webSocketIdPtr == IntPtr.Zero)
+                {
+                    throw new Exception("WebSocket 생성 실패");
+                }
+                
+                // WebSocket ID 문자열 저장
+                _webSocketId = Marshal.PtrToStringAnsi(_webSocketIdPtr);
+                
+                Debug.Log($"[Connect] WebSocket 생성 완료. 연결 대기 중... (ID: {_webSocketId})");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Connect] ❌ WebSocket 연결 실패: {ex.Message}");
+                Debug.LogError($"[Connect] 스택 트레이스: {ex.StackTrace}");
+                
+                _webSocketId = null;
+                if (_webSocketIdPtr != IntPtr.Zero)
+                {
+                    WebSocket_FreeString(_webSocketIdPtr);
+                    _webSocketIdPtr = IntPtr.Zero;
+                }
+            }
+#else
+            // Editor: 기존 TCP 소켓 사용
             //  CASE 2: REAL SERVER MODE (실제 서버 연결 및 요청)
             Debug.Log($"[Connect] 서버 연결 시도 시작: {ip}:{port}");
             try
@@ -373,6 +530,7 @@ public class NetworkManager : MonoBehaviour
                 _client = null;
                 _stream = null;
             }
+#endif
         }
     }
 
@@ -421,25 +579,40 @@ public class NetworkManager : MonoBehaviour
         try
         {
             TextAsset configFile = Resources.Load<TextAsset>("server-config");
-            if (configFile != null)
+            if (configFile == null)
             {
+                Debug.LogWarning("[NetworkManager] 설정 파일을 찾을 수 없습니다. Resources/server-config.json 파일이 있는지 확인하세요.");
+            }
+            else
+            {
+                Debug.Log($"[NetworkManager] 설정 파일 발견. 내용: {configFile.text}");
                 ServerConfig config = JsonUtility.FromJson<ServerConfig>(configFile.text);
                 if (config != null && !string.IsNullOrEmpty(config.serverIP))
                 {
                     serverIP = config.serverIP;
-                    serverPort = config.serverPort;
-                    Debug.Log($"[NetworkManager] 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort}");
+                    // Editor에서는 Railway TCP 포트(36222) 사용 (내부 포트 7777로 매핑됨)
+                    // Railway 포트 매핑: switchback.proxy.rlwy.net:36222 -> :7777
+                    serverPort = config.serverPort; // 설정 파일의 포트 사용 (36222)
+                    Debug.Log($"[NetworkManager] ✅ 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort} (TCP, Railway 매핑: 내부 7777)");
                     return;
+                }
+                else
+                {
+                    Debug.LogWarning("[NetworkManager] 설정 파일의 serverIP가 비어있습니다.");
                 }
             }
         }
         catch (Exception e)
         {
-            Debug.LogWarning($"[NetworkManager] 설정 파일에서 서버 설정 로드 실패 (Editor): {e.Message}");
+            Debug.LogError($"[NetworkManager] 설정 파일에서 서버 설정 로드 실패 (Editor): {e.Message}\n{e.StackTrace}");
         }
         
-        // 설정 파일이 없으면 Inspector 기본값 사용
-        Debug.Log($"[NetworkManager] Inspector 기본값 사용: {serverIP}:{serverPort}");
+        // 설정 파일이 없으면 Inspector 기본값 사용 (Editor에서는 TCP 포트 사용)
+        if (serverPort != 7777)
+        {
+            serverPort = 7777;
+        }
+        Debug.Log($"[NetworkManager] ⚠️ Inspector 기본값 사용 (Editor): {serverIP}:{serverPort} (TCP)");
     }
     
     /// <summary>
@@ -462,6 +635,17 @@ public class NetworkManager : MonoBehaviour
     
     private void Disconnect()
     {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // WebGL: WebSocket 연결 종료
+        if (!string.IsNullOrEmpty(_webSocketId) && _webSocketIdPtr != IntPtr.Zero)
+        {
+            WebSocket_Close(_webSocketIdPtr);
+            WebSocket_FreeString(_webSocketIdPtr);
+            _webSocketIdPtr = IntPtr.Zero;
+            _webSocketId = null;
+        }
+#else
+        // Editor: 기존 TCP 연결 종료
         _isRunning = false;
         
         if (_receiveThread != null && _receiveThread.IsAlive)
@@ -480,10 +664,12 @@ public class NetworkManager : MonoBehaviour
             try { _client.Close(); } catch { }
             _client = null;
         }
+#endif
     }
 
     private void ReceiveLoop()
     {
+#if !UNITY_WEBGL || UNITY_EDITOR
         Debug.Log("[ReceiveLoop] 수신 루프 시작.");
         const int MAX_BUFFER_SIZE = 4096;
         byte[] receiveBuffer = new byte[MAX_BUFFER_SIZE];
@@ -607,6 +793,10 @@ public class NetworkManager : MonoBehaviour
             }
         }
         Debug.Log("[ReceiveLoop] 수신 루프 종료.");
+#else
+        // WebGL에서는 ReceiveLoop를 사용하지 않음 (WebSocket 콜백 사용)
+        Debug.Log("[ReceiveLoop] WebGL 빌드에서는 ReceiveLoop를 사용하지 않습니다.");
+#endif
     }
 
     void OnDestroy()
@@ -625,6 +815,47 @@ public class NetworkManager : MonoBehaviour
             return;
         }
 
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // WebGL: WebSocket 전송
+        if (string.IsNullOrEmpty(_webSocketId) || _webSocketIdPtr == IntPtr.Zero)
+        {
+            Debug.LogError("WebSocket에 연결되지 않아 패킷을 보낼 수 없습니다.");
+            return;
+        }
+        
+        int readyState = WebSocket_GetReadyState(_webSocketIdPtr);
+        if (readyState != 1) // OPEN
+        {
+            Debug.LogError($"WebSocket이 열려있지 않습니다. 상태: {readyState}");
+            return;
+        }
+        
+        try
+        {
+            // byte[]를 IntPtr로 변환
+            IntPtr dataPtr = Marshal.AllocHGlobal(packet.Length);
+            Marshal.Copy(packet, 0, dataPtr, packet.Length);
+            
+            int result = WebSocket_Send(_webSocketIdPtr, dataPtr, packet.Length);
+            
+            // 메모리 해제
+            Marshal.FreeHGlobal(dataPtr);
+            
+            if (result == 1)
+            {
+                Debug.Log($"패킷 전송 완료. 길이: {packet.Length} 바이트");
+            }
+            else
+            {
+                Debug.LogError("WebSocket 패킷 전송 실패");
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"패킷 전송 중 오류 발생: {e.Message}");
+        }
+#else
+        // Editor: 기존 TCP 전송
         if (_stream == null || _client == null || !_client.Connected)
         {
             Debug.LogError("서버에 연결되지 않아 패킷을 보낼 수 없습니다.");
@@ -640,6 +871,7 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.LogError($"패킷 전송 중 오류 발생: {e.Message}");
         }
+#endif
     }
 
     // --- 패킷 처리 및 핸들링 ---
@@ -932,8 +1164,10 @@ public class NetworkManager : MonoBehaviour
         if (!IsConnected())
         {
             Debug.LogError("[SendRoomListRequest] 서버에 연결되지 않은 상태입니다. 방 목록을 요청할 수 없습니다.");
+#if !UNITY_WEBGL || UNITY_EDITOR
             Debug.LogError("[SendRoomListRequest] 연결 상태: _client=" + (_client != null ? "존재" : "null") + 
                           ", Connected=" + (_client != null ? _client.Connected.ToString() : "N/A"));
+#endif
             Debug.LogError("[SendRoomListRequest] IS_DUMMY_MODE=" + IS_DUMMY_MODE);
             return;
         }
@@ -1062,7 +1296,15 @@ public class NetworkManager : MonoBehaviour
     }
     public bool IsConnected()
     {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        if (string.IsNullOrEmpty(_webSocketId) || _webSocketIdPtr == IntPtr.Zero)
+            return false;
+        
+        int readyState = WebSocket_GetReadyState(_webSocketIdPtr);
+        return readyState == 1; // OPEN
+#else
         return _client != null && _client.Connected;
+#endif
     }
 
     private void ProcessGameStartNotify(PacketReader reader)

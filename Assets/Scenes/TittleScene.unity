@@ -413,9 +413,11 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 44b10b9dbd00b2840bc53b6e55a1bd8b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  serverIP: 127.0.0.1
-  serverPort: 7777
+  serverIP: switchback.proxy.rlwy.net
+  serverPort: 36222
   IS_DUMMY_MODE: 0
+  _myUniqueUserName: 
+  _gamePlayerList: []
 --- !u!1001 &1591329651
 PrefabInstance:
   m_ObjectHideFlags: 0
