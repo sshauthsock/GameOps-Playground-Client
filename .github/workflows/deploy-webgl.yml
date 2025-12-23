@@ -30,6 +30,14 @@ jobs:
 
       - name: Setup Pages
         uses: actions/configure-pages@v4
+        continue-on-error: true
+        id: pages
+
+      - name: Check Pages Status
+        if: steps.pages.outcome == 'failure'
+        run: |
+          echo "::warning::GitHub Pages가 활성화되지 않았습니다. 저장소 Settings → Pages에서 GitHub Actions를 활성화해주세요."
+          echo "::warning::자세한 안내: https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site"
 
       - name: Check WebGL Build
         id: check_build
