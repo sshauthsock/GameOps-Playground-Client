@@ -414,8 +414,9 @@ public class NetworkManager : MonoBehaviour
             // WebGL: WebSocket 사용
             // HTTPS 페이지에서는 wss://를 사용해야 함 (Mixed Content 정책)
             // GitHub Pages는 HTTPS이므로 항상 wss:// 사용
+            // Railway HTTP 서비스는 포트 번호 불필요
             string protocol = "wss://";
-            string wsUrl = $"{protocol}{ip}:{port}";
+            string wsUrl = port > 0 ? $"{protocol}{ip}:{port}" : $"{protocol}{ip}";
             Debug.Log($"[Connect] WebSocket 연결 시도 시작: {wsUrl}");
             try
             {
