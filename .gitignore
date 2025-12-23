@@ -8,6 +8,13 @@
 /[Oo]bj/
 /[Bb]uild/
 /[Bb]uilds/
+# WebGL 빌드는 GitHub Pages 배포를 위해 포함
+!/WebGLBuild/
+!/WebGLBuild/**
+# Build 폴더도 WebGL 빌드일 수 있으므로 예외 추가 (index.html이 있는 경우)
+!/Build/index.html
+!/Build/Build/
+!/Build/TemplateData/
 /[Ll]ogs/
 /[Uu]ser[Ss]ettings/
 *.log

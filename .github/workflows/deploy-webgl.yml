@@ -1,0 +1,74 @@
+name: Deploy WebGL to GitHub Pages
+
+on:
+  push:
+    branches:
+      - deploy/webgl
+    paths:
+      - "WebGLBuild/**"
+      - "Build/**"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+        continue-on-error: true
+        id: pages
+
+      - name: Check Pages Status
+        if: steps.pages.outcome == 'failure'
+        run: |
+          echo "::warning::GitHub Pages가 활성화되지 않았습니다. 저장소 Settings → Pages에서 GitHub Actions를 활성화해주세요."
+          echo "::warning::자세한 안내: https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site"
+
+      - name: Check WebGL Build
+        id: check_build
+        run: |
+          if [ -d "WebGLBuild" ] && [ "$(ls -A WebGLBuild)" ]; then
+            echo "build_folder=WebGLBuild" >> $GITHUB_OUTPUT
+            echo "build_exists=true" >> $GITHUB_OUTPUT
+            echo "WebGL 빌드 폴더가 존재합니다"
+          elif [ -d "Build" ] && [ -f "Build/index.html" ]; then
+            echo "build_folder=Build" >> $GITHUB_OUTPUT
+            echo "build_exists=true" >> $GITHUB_OUTPUT
+            echo "Build 폴더가 존재합니다 (WebGLBuild로 사용)"
+          else
+            echo "build_exists=false" >> $GITHUB_OUTPUT
+            echo "WebGL 빌드 폴더가 없습니다. Unity에서 WebGL 빌드를 먼저 생성해주세요."
+            echo "빌드 폴더: WebGLBuild/ 또는 Build/"
+          fi
+
+      - name: Upload artifact
+        if: steps.check_build.outputs.build_exists == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: "./${{ steps.check_build.outputs.build_folder }}"
+
+      - name: Deploy to GitHub Pages
+        if: steps.check_build.outputs.build_exists == 'true'
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Build not found
+        if: steps.check_build.outputs.build_exists == 'false'
+        run: |
+          echo "::warning::WebGL 빌드 폴더가 없습니다. Unity에서 WebGL 빌드를 생성한 후 다시 시도해주세요."
+          exit 1

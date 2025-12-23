@@ -4,14 +4,35 @@ using System.Collections;
 using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
+using System.Runtime.InteropServices;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+
+[System.Serializable]
+public class ServerConfig
+{
+    public string serverIP;
+    public int serverPort;
+    public string description;
+}
 
 public class NetworkManager : MonoBehaviour
 {
     public static NetworkManager Instance { get; private set; }
-    [SerializeField] private string serverIP = "127.0.0.1";
+    // [SerializeField] private string serverIP = "127.0.0.1";
+    [SerializeField] private string serverIP = "gameops-playground-server-production.up.railway.app";
+
     [SerializeField] private int serverPort = 7777;
+    
+#if UNITY_WEBGL && !UNITY_EDITOR && false
+    // WebGL JavaScript 플러그인 함수 (일시적으로 비활성화 - 빌드 오류 해결)
+    // Unity가 .jslib 파일을 인식하지 못할 때는 이 부분을 false로 설정
+    [DllImport("__Internal")]
+    private static extern IntPtr GetServerIP();
+    
+    [DllImport("__Internal")]
+    private static extern int GetServerPort();
+#endif
 
     public bool IS_DUMMY_MODE = false; // 실제 서버 연결 시 false, 테스트 시 true (실제 서버 모드로 설정됨)
     private TcpClient _client;
@@ -72,6 +93,14 @@ public class NetworkManager : MonoBehaviour
 
     void Start()
     {
+        // 서버 설정 로드 (Editor와 WebGL 모두)
+#if UNITY_WEBGL && !UNITY_EDITOR
+        LoadWebGLServerConfig();
+#else
+        // Unity Editor에서도 설정 파일 로드 (선택사항)
+        LoadServerConfigForEditor();
+#endif
+        
         // 각 클라이언트마다 고유한 userName 생성 (타임스탬프 + 랜덤 + 프로세스 ID)
         // 더 고유성을 보장하기 위해 System.Diagnostics.Process.GetCurrentProcess().Id 추가
         long ticks = System.DateTime.Now.Ticks;
@@ -347,6 +376,90 @@ public class NetworkManager : MonoBehaviour
         }
     }
 
+    /// <summary>
+    /// WebGL 빌드에서 서버 설정을 로드합니다.
+    /// 우선순위: 1) URL 파라미터 2) 설정 파일 3) Inspector 기본값
+    /// </summary>
+    private void LoadWebGLServerConfig()
+    {
+#if UNITY_WEBGL && !UNITY_EDITOR
+        // JavaScript 함수 호출은 일시적으로 비활성화 (빌드 오류 해결)
+        // Unity가 .jslib 파일을 인식하지 못할 때는 설정 파일만 사용
+        // URL 파라미터 기능은 나중에 활성화 가능
+        
+        try
+        {
+            // 2. 설정 파일에서 서버 IP 가져오기
+            TextAsset configFile = Resources.Load<TextAsset>("server-config");
+            if (configFile != null)
+            {
+                ServerConfig config = JsonUtility.FromJson<ServerConfig>(configFile.text);
+                if (config != null && !string.IsNullOrEmpty(config.serverIP))
+                {
+                    serverIP = config.serverIP;
+                    serverPort = config.serverPort;
+                    Debug.Log($"[NetworkManager] 설정 파일에서 서버 설정 로드: {serverIP}:{serverPort}");
+                    return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NetworkManager] 설정 파일에서 서버 설정 로드 실패: {e.Message}");
+        }
+        
+        // 3. Inspector 기본값 사용
+        Debug.Log($"[NetworkManager] 기본 서버 설정 사용: {serverIP}:{serverPort}");
+#endif
+    }
+    
+    /// <summary>
+    /// Unity Editor에서 설정 파일을 로드합니다 (선택사항)
+    /// </summary>
+    private void LoadServerConfigForEditor()
+    {
+        try
+        {
+            TextAsset configFile = Resources.Load<TextAsset>("server-config");
+            if (configFile != null)
+            {
+                ServerConfig config = JsonUtility.FromJson<ServerConfig>(configFile.text);
+                if (config != null && !string.IsNullOrEmpty(config.serverIP))
+                {
+                    serverIP = config.serverIP;
+                    serverPort = config.serverPort;
+                    Debug.Log($"[NetworkManager] 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort}");
+                    return;
+                }
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogWarning($"[NetworkManager] 설정 파일에서 서버 설정 로드 실패 (Editor): {e.Message}");
+        }
+        
+        // 설정 파일이 없으면 Inspector 기본값 사용
+        Debug.Log($"[NetworkManager] Inspector 기본값 사용: {serverIP}:{serverPort}");
+    }
+    
+    /// <summary>
+    /// 런타임에 서버 IP를 설정할 수 있는 메서드 (GameLift 등에서 사용)
+    /// </summary>
+    public void SetServerIP(string ip)
+    {
+        serverIP = ip;
+        Debug.Log($"[NetworkManager] 서버 IP 설정: {serverIP}");
+    }
+    
+    /// <summary>
+    /// 런타임에 서버 포트를 설정할 수 있는 메서드
+    /// </summary>
+    public void SetServerPort(int port)
+    {
+        serverPort = port;
+        Debug.Log($"[NetworkManager] 서버 포트 설정: {serverPort}");
+    }
+    
     private void Disconnect()
     {
         _isRunning = false;
