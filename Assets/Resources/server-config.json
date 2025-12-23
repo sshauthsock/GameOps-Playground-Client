@@ -1,0 +1,5 @@
+{
+  "serverIP": "gameops-playground-server-production.up.railway.app",
+  "serverPort": 7777,
+  "description": "WebGL 배포용 서버 설정. Railway 서버: gameops-playground-server-production.up.railway.app"
+}
