@@ -147,8 +147,10 @@ public class NetworkManager : MonoBehaviour
     private NetworkStream _stream;
 #endif
 
+#if !UNITY_WEBGL || UNITY_EDITOR
     private Thread _receiveThread;
     private bool _isRunning = true;
+#endif
 
     internal Queue<byte[]> _packetQueue = new Queue<byte[]>();
     private List<byte> _receiveBuffer = new List<byte>(); // 누적 버퍼 (불완전한 패킷 보관)
