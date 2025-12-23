@@ -22,29 +22,70 @@ mergeInto(LibraryManager.library, {
         // WebSocket 이벤트 핸들러
         ws.onopen = function() {
             if (ws._onOpenPtr) {
-                Module.dynCall('v', ws._onOpenPtr);
+                try {
+                    if (typeof Module !== 'undefined' && Module.dynCall) {
+                        Module.dynCall('v', ws._onOpenPtr);
+                    } else if (typeof dynCall !== 'undefined') {
+                        dynCall('v', ws._onOpenPtr);
+                    } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                        Runtime.dynCall('v', ws._onOpenPtr);
+                    }
+                } catch (e) {
+                    console.error('WebSocket onopen callback error:', e);
+                }
             }
         };
         
         ws.onmessage = function(event) {
             if (ws._onMessagePtr && event.data instanceof ArrayBuffer) {
-                var data = new Uint8Array(event.data);
-                var dataPtr = _malloc(data.length);
-                HEAP8.set(data, dataPtr);
-                Module.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
-                _free(dataPtr);
+                try {
+                    var data = new Uint8Array(event.data);
+                    var dataPtr = _malloc(data.length);
+                    HEAP8.set(data, dataPtr);
+                    if (typeof Module !== 'undefined' && Module.dynCall) {
+                        Module.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                    } else if (typeof dynCall !== 'undefined') {
+                        dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                    } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                        Runtime.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                    }
+                    _free(dataPtr);
+                } catch (e) {
+                    console.error('WebSocket onmessage callback error:', e);
+                    if (dataPtr) _free(dataPtr);
+                }
             }
         };
         
         ws.onerror = function(error) {
             if (ws._onErrorPtr) {
-                Module.dynCall('v', ws._onErrorPtr);
+                try {
+                    if (typeof Module !== 'undefined' && Module.dynCall) {
+                        Module.dynCall('v', ws._onErrorPtr);
+                    } else if (typeof dynCall !== 'undefined') {
+                        dynCall('v', ws._onErrorPtr);
+                    } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                        Runtime.dynCall('v', ws._onErrorPtr);
+                    }
+                } catch (e) {
+                    console.error('WebSocket onerror callback error:', e);
+                }
             }
         };
         
         ws.onclose = function(event) {
             if (ws._onClosePtr) {
-                Module.dynCall('vi', ws._onClosePtr, [event.code]);
+                try {
+                    if (typeof Module !== 'undefined' && Module.dynCall) {
+                        Module.dynCall('vi', ws._onClosePtr, [event.code]);
+                    } else if (typeof dynCall !== 'undefined') {
+                        dynCall('vi', ws._onClosePtr, [event.code]);
+                    } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                        Runtime.dynCall('vi', ws._onClosePtr, [event.code]);
+                    }
+                } catch (e) {
+                    console.error('WebSocket onclose callback error:', e);
+                }
             }
         };
         
