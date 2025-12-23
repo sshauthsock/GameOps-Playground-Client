@@ -42,7 +42,7 @@ public class NetworkManager : MonoBehaviour
     private static extern IntPtr WebSocket_Connect(string url, IntPtr onOpen, IntPtr onMessage, IntPtr onError, IntPtr onClose);
     
     [DllImport("__Internal")]
-    private static extern int WebSocket_Send(IntPtr wsId, byte[] data, int length);
+    private static extern int WebSocket_Send(IntPtr wsId, IntPtr data, int length);
     
     [DllImport("__Internal")]
     private static extern int WebSocket_GetReadyState(IntPtr wsId);
@@ -666,6 +666,7 @@ public class NetworkManager : MonoBehaviour
 
     private void ReceiveLoop()
     {
+#if !UNITY_WEBGL || UNITY_EDITOR
         Debug.Log("[ReceiveLoop] 수신 루프 시작.");
         const int MAX_BUFFER_SIZE = 4096;
         byte[] receiveBuffer = new byte[MAX_BUFFER_SIZE];
@@ -789,6 +790,10 @@ public class NetworkManager : MonoBehaviour
             }
         }
         Debug.Log("[ReceiveLoop] 수신 루프 종료.");
+#else
+        // WebGL에서는 ReceiveLoop를 사용하지 않음 (WebSocket 콜백 사용)
+        Debug.Log("[ReceiveLoop] WebGL 빌드에서는 ReceiveLoop를 사용하지 않습니다.");
+#endif
     }
 
     void OnDestroy()
@@ -824,7 +829,15 @@ public class NetworkManager : MonoBehaviour
         
         try
         {
-            int result = WebSocket_Send(_webSocketIdPtr, packet, packet.Length);
+            // byte[]를 IntPtr로 변환
+            IntPtr dataPtr = Marshal.AllocHGlobal(packet.Length);
+            Marshal.Copy(packet, 0, dataPtr, packet.Length);
+            
+            int result = WebSocket_Send(_webSocketIdPtr, dataPtr, packet.Length);
+            
+            // 메모리 해제
+            Marshal.FreeHGlobal(dataPtr);
+            
             if (result == 1)
             {
                 Debug.Log($"패킷 전송 완료. 길이: {packet.Length} 바이트");
@@ -1148,8 +1161,10 @@ public class NetworkManager : MonoBehaviour
         if (!IsConnected())
         {
             Debug.LogError("[SendRoomListRequest] 서버에 연결되지 않은 상태입니다. 방 목록을 요청할 수 없습니다.");
+#if !UNITY_WEBGL || UNITY_EDITOR
             Debug.LogError("[SendRoomListRequest] 연결 상태: _client=" + (_client != null ? "존재" : "null") + 
                           ", Connected=" + (_client != null ? _client.Connected.ToString() : "N/A"));
+#endif
             Debug.LogError("[SendRoomListRequest] IS_DUMMY_MODE=" + IS_DUMMY_MODE);
             return;
         }
