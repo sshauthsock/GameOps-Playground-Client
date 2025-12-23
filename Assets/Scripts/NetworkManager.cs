@@ -24,8 +24,9 @@ public class NetworkManager : MonoBehaviour
 
     [SerializeField] private int serverPort = 7777;
     
-#if UNITY_WEBGL && !UNITY_EDITOR
-    // WebGL JavaScript 플러그인 함수
+#if UNITY_WEBGL && !UNITY_EDITOR && false
+    // WebGL JavaScript 플러그인 함수 (일시적으로 비활성화 - 빌드 오류 해결)
+    // Unity가 .jslib 파일을 인식하지 못할 때는 이 부분을 false로 설정
     [DllImport("__Internal")]
     private static extern IntPtr GetServerIP();
     
@@ -382,30 +383,9 @@ public class NetworkManager : MonoBehaviour
     private void LoadWebGLServerConfig()
     {
 #if UNITY_WEBGL && !UNITY_EDITOR
-        try
-        {
-            // 1. URL 파라미터에서 서버 IP 가져오기
-            IntPtr ipPtr = GetServerIP();
-            string urlServerIP = "";
-            if (ipPtr != IntPtr.Zero)
-            {
-                urlServerIP = Marshal.PtrToStringAnsi(ipPtr);
-                // 메모리 해제는 Unity가 자동으로 처리하므로 수동 해제 불필요
-            }
-            int urlServerPort = GetServerPort();
-            
-            if (!string.IsNullOrEmpty(urlServerIP))
-            {
-                serverIP = urlServerIP;
-                serverPort = urlServerPort;
-                Debug.Log($"[NetworkManager] URL 파라미터에서 서버 설정 로드: {serverIP}:{serverPort}");
-                return;
-            }
-        }
-        catch (Exception e)
-        {
-            Debug.LogWarning($"[NetworkManager] URL 파라미터에서 서버 설정 로드 실패: {e.Message}");
-        }
+        // JavaScript 함수 호출은 일시적으로 비활성화 (빌드 오류 해결)
+        // Unity가 .jslib 파일을 인식하지 못할 때는 설정 파일만 사용
+        // URL 파라미터 기능은 나중에 활성화 가능
         
         try
         {
