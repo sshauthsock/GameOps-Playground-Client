@@ -77,9 +77,19 @@ public class NetworkManager : MonoBehaviour
         byte[] packet = new byte[length];
         Marshal.Copy(dataPtr, packet, 0, length);
         
+        Debug.Log($"[HandleWebSocketMessage] 서버로부터 메시지 수신: {length} 바이트");
+        
+        // 패킷 ID 확인 (최소 4바이트 필요)
+        if (length >= 4)
+        {
+            ushort messageID = (ushort)(packet[0] | (packet[1] << 8));
+            Debug.Log($"[HandleWebSocketMessage] 패킷 ID: {messageID}, 길이: {length} 바이트");
+        }
+        
         lock (_packetQueue)
         {
             _packetQueue.Enqueue(packet);
+            Debug.Log($"[HandleWebSocketMessage] 패킷 큐에 추가. 현재 큐 크기: {_packetQueue.Count}");
         }
     }
     
