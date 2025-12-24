@@ -37,23 +37,34 @@ mergeInto(LibraryManager.library, {
         };
         
         ws.onmessage = function(event) {
+            console.log('[WebSocket.jslib] onmessage 호출됨. data type:', typeof event.data, 'instanceof ArrayBuffer:', event.data instanceof ArrayBuffer);
+            
             if (ws._onMessagePtr && event.data instanceof ArrayBuffer) {
                 try {
                     var data = new Uint8Array(event.data);
+                    console.log('[WebSocket.jslib] ArrayBuffer 데이터 수신:', data.length, '바이트');
                     var dataPtr = _malloc(data.length);
                     HEAP8.set(data, dataPtr);
+                    console.log('[WebSocket.jslib] C# 콜백 호출 시도. onMessagePtr:', ws._onMessagePtr);
                     if (typeof Module !== 'undefined' && Module.dynCall) {
                         Module.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                        console.log('[WebSocket.jslib] Module.dynCall 호출 완료');
                     } else if (typeof dynCall !== 'undefined') {
                         dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                        console.log('[WebSocket.jslib] dynCall 호출 완료');
                     } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
                         Runtime.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
+                        console.log('[WebSocket.jslib] Runtime.dynCall 호출 완료');
+                    } else {
+                        console.error('[WebSocket.jslib] dynCall 함수를 찾을 수 없음!');
                     }
                     _free(dataPtr);
                 } catch (e) {
-                    console.error('WebSocket onmessage callback error:', e);
+                    console.error('[WebSocket.jslib] onmessage callback error:', e);
                     if (dataPtr) _free(dataPtr);
                 }
+            } else {
+                console.warn('[WebSocket.jslib] onMessagePtr가 없거나 ArrayBuffer가 아님. onMessagePtr:', ws._onMessagePtr, 'data type:', typeof event.data);
             }
         };
         
