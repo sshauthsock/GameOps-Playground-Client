@@ -1,5 +1,5 @@
 {
   "serverIP": "gameops-playground-server-production.up.railway.app",
   "serverPort": 0,
-  "description": "Railway HTTP 서비스. wss:// 프로토콜 사용, 포트 번호 불필요"
+  "description": "Railway HTTP 서비스. WebSocket 사용, 포트 번호 불필요 (Editor와 WebGL 모두)"
 }
