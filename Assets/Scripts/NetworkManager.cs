@@ -133,7 +133,34 @@ public class NetworkManager : MonoBehaviour
     
     private void HandleWebSocketClose(int code)
     {
-        Debug.Log($"[Connect] WebSocket 연결 종료 (코드: {code})");
+        string codeDescription = code switch
+        {
+            1000 => "정상 종료",
+            1001 => "엔드포인트가 떠남",
+            1002 => "프로토콜 오류",
+            1003 => "지원하지 않는 데이터 타입",
+            1006 => "비정상 종료 (연결 실패)",
+            1007 => "데이터 형식 오류",
+            1008 => "정책 위반",
+            1009 => "메시지가 너무 큼",
+            1010 => "확장 협상 실패",
+            1011 => "서버 오류",
+            _ => "알 수 없는 코드"
+        };
+        
+        Debug.Log($"[Connect] WebSocket 연결 종료 (코드: {code}, {codeDescription})");
+        Debug.Log($"[Connect] 연결 시도한 URL: wss://{serverIP}:{serverPort}");
+        
+        if (code == 1006)
+        {
+            Debug.LogError("[Connect] 비정상 종료 (1006) - 연결이 실패했습니다");
+            Debug.LogError("[Connect] 가능한 원인:");
+            Debug.LogError("  1. 서버가 실행 중이 아닙니다");
+            Debug.LogError("  2. Railway 서버가 WebSocket을 지원하지 않습니다");
+            Debug.LogError("  3. 서버가 특정 경로를 요구합니다");
+            Debug.LogError("  4. 네트워크 문제");
+        }
+        
         _webSocketId = null;
         if (_webSocketIdPtr != IntPtr.Zero)
         {

@@ -58,6 +58,9 @@ mergeInto(LibraryManager.library, {
         };
         
         ws.onerror = function(error) {
+            console.error('WebSocket error:', error);
+            console.error('WebSocket URL:', url);
+            console.error('WebSocket readyState:', ws.readyState);
             if (ws._onErrorPtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -74,6 +77,12 @@ mergeInto(LibraryManager.library, {
         };
         
         ws.onclose = function(event) {
+            console.log('WebSocket closed:', {
+                code: event.code,
+                reason: event.reason,
+                wasClean: event.wasClean,
+                url: url
+            });
             if (ws._onClosePtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
