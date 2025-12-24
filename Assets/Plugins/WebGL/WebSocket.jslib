@@ -21,6 +21,7 @@ mergeInto(LibraryManager.library, {
         
         // WebSocket 이벤트 핸들러
         ws.onopen = function() {
+            console.log('[WebSocket.jslib] onopen 호출됨. readyState:', ws.readyState, 'url:', ws.url);
             if (ws._onOpenPtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -30,45 +31,86 @@ mergeInto(LibraryManager.library, {
                     } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
                         Runtime.dynCall('v', ws._onOpenPtr);
                     }
+                    console.log('[WebSocket.jslib] onopen C# 콜백 호출 완료');
                 } catch (e) {
-                    console.error('WebSocket onopen callback error:', e);
+                    console.error('[WebSocket.jslib] onopen callback error:', e);
                 }
+            } else {
+                console.error('[WebSocket.jslib] onOpenPtr가 없음!');
             }
         };
         
         ws.onmessage = function(event) {
-            console.log('[WebSocket.jslib] onmessage 호출됨. data type:', typeof event.data, 'instanceof ArrayBuffer:', event.data instanceof ArrayBuffer);
+            console.log('[WebSocket.jslib] onmessage 호출됨. data type:', typeof event.data, 'instanceof ArrayBuffer:', event.data instanceof ArrayBuffer, 'instanceof Blob:', event.data instanceof Blob);
             
-            if (ws._onMessagePtr && event.data instanceof ArrayBuffer) {
-                try {
-                    var data = new Uint8Array(event.data);
-                    console.log('[WebSocket.jslib] ArrayBuffer 데이터 수신:', data.length, '바이트');
-                    var dataPtr = _malloc(data.length);
-                    HEAP8.set(data, dataPtr);
-                    console.log('[WebSocket.jslib] C# 콜백 호출 시도. onMessagePtr:', ws._onMessagePtr);
-                    if (typeof Module !== 'undefined' && Module.dynCall) {
-                        Module.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
-                        console.log('[WebSocket.jslib] Module.dynCall 호출 완료');
-                    } else if (typeof dynCall !== 'undefined') {
-                        dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
-                        console.log('[WebSocket.jslib] dynCall 호출 완료');
-                    } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
-                        Runtime.dynCall('vii', ws._onMessagePtr, [dataPtr, data.length]);
-                        console.log('[WebSocket.jslib] Runtime.dynCall 호출 완료');
-                    } else {
-                        console.error('[WebSocket.jslib] dynCall 함수를 찾을 수 없음!');
-                    }
-                    _free(dataPtr);
-                } catch (e) {
-                    console.error('[WebSocket.jslib] onmessage callback error:', e);
-                    if (dataPtr) _free(dataPtr);
+            if (!ws._onMessagePtr) {
+                console.error('[WebSocket.jslib] onMessagePtr가 없음!');
+                return;
+            }
+            
+            try {
+                var data;
+                var dataLength;
+                
+                if (event.data instanceof ArrayBuffer) {
+                    data = new Uint8Array(event.data);
+                    dataLength = data.length;
+                    console.log('[WebSocket.jslib] ArrayBuffer 데이터 수신:', dataLength, '바이트');
+                } else if (event.data instanceof Blob) {
+                    console.log('[WebSocket.jslib] Blob 데이터 수신, ArrayBuffer로 변환 중...');
+                    var reader = new FileReader();
+                    reader.onload = function() {
+                        var arrayBuffer = reader.result;
+                        var blobData = new Uint8Array(arrayBuffer);
+                        var blobDataPtr = _malloc(blobData.length);
+                        HEAP8.set(blobData, blobDataPtr);
+                        console.log('[WebSocket.jslib] Blob 데이터 변환 완료:', blobData.length, '바이트');
+                        if (typeof Module !== 'undefined' && Module.dynCall) {
+                            Module.dynCall('vii', ws._onMessagePtr, [blobDataPtr, blobData.length]);
+                        } else if (typeof dynCall !== 'undefined') {
+                            dynCall('vii', ws._onMessagePtr, [blobDataPtr, blobData.length]);
+                        } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                            Runtime.dynCall('vii', ws._onMessagePtr, [blobDataPtr, blobData.length]);
+                        }
+                        _free(blobDataPtr);
+                    };
+                    reader.readAsArrayBuffer(event.data);
+                    return;
+                } else if (typeof event.data === 'string') {
+                    console.log('[WebSocket.jslib] 텍스트 데이터 수신:', event.data);
+                    var encoder = new TextEncoder();
+                    data = encoder.encode(event.data);
+                    dataLength = data.length;
+                    console.log('[WebSocket.jslib] 텍스트를 ArrayBuffer로 변환 완료:', dataLength, '바이트');
+                } else {
+                    console.error('[WebSocket.jslib] 알 수 없는 데이터 타입:', typeof event.data, event.data);
+                    return;
                 }
-            } else {
-                console.warn('[WebSocket.jslib] onMessagePtr가 없거나 ArrayBuffer가 아님. onMessagePtr:', ws._onMessagePtr, 'data type:', typeof event.data);
+                
+                var dataPtr = _malloc(dataLength);
+                HEAP8.set(data, dataPtr);
+                console.log('[WebSocket.jslib] C# 콜백 호출 시도. onMessagePtr:', ws._onMessagePtr, 'dataLength:', dataLength);
+                
+                if (typeof Module !== 'undefined' && Module.dynCall) {
+                    Module.dynCall('vii', ws._onMessagePtr, [dataPtr, dataLength]);
+                    console.log('[WebSocket.jslib] Module.dynCall 호출 완료');
+                } else if (typeof dynCall !== 'undefined') {
+                    dynCall('vii', ws._onMessagePtr, [dataPtr, dataLength]);
+                    console.log('[WebSocket.jslib] dynCall 호출 완료');
+                } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
+                    Runtime.dynCall('vii', ws._onMessagePtr, [dataPtr, dataLength]);
+                    console.log('[WebSocket.jslib] Runtime.dynCall 호출 완료');
+                } else {
+                    console.error('[WebSocket.jslib] dynCall 함수를 찾을 수 없음!');
+                }
+                _free(dataPtr);
+            } catch (e) {
+                console.error('[WebSocket.jslib] onmessage callback error:', e, e.stack);
             }
         };
         
         ws.onerror = function(error) {
+            console.error('[WebSocket.jslib] onerror 호출됨. error:', error, 'readyState:', ws.readyState);
             if (ws._onErrorPtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -78,13 +120,17 @@ mergeInto(LibraryManager.library, {
                     } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
                         Runtime.dynCall('v', ws._onErrorPtr);
                     }
+                    console.log('[WebSocket.jslib] onerror C# 콜백 호출 완료');
                 } catch (e) {
-                    console.error('WebSocket onerror callback error:', e);
+                    console.error('[WebSocket.jslib] onerror callback error:', e);
                 }
+            } else {
+                console.error('[WebSocket.jslib] onErrorPtr가 없음!');
             }
         };
         
         ws.onclose = function(event) {
+            console.log('[WebSocket.jslib] onclose 호출됨. code:', event.code, 'reason:', event.reason, 'wasClean:', event.wasClean, 'readyState:', ws.readyState);
             if (ws._onClosePtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -94,9 +140,12 @@ mergeInto(LibraryManager.library, {
                     } else if (typeof Runtime !== 'undefined' && Runtime.dynCall) {
                         Runtime.dynCall('vi', ws._onClosePtr, [event.code]);
                     }
+                    console.log('[WebSocket.jslib] onclose C# 콜백 호출 완료. code:', event.code);
                 } catch (e) {
-                    console.error('WebSocket onclose callback error:', e);
+                    console.error('[WebSocket.jslib] onclose callback error:', e);
                 }
+            } else {
+                console.error('[WebSocket.jslib] onClosePtr가 없음!');
             }
         };
         
