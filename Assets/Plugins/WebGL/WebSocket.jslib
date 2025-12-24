@@ -58,9 +58,6 @@ mergeInto(LibraryManager.library, {
         };
         
         ws.onerror = function(error) {
-            console.error('WebSocket error:', error);
-            console.error('WebSocket URL:', url);
-            console.error('WebSocket readyState:', ws.readyState);
             if (ws._onErrorPtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -77,12 +74,6 @@ mergeInto(LibraryManager.library, {
         };
         
         ws.onclose = function(event) {
-            console.log('WebSocket closed:', {
-                code: event.code,
-                reason: event.reason,
-                wasClean: event.wasClean,
-                url: url
-            });
             if (ws._onClosePtr) {
                 try {
                     if (typeof Module !== 'undefined' && Module.dynCall) {
@@ -114,7 +105,12 @@ mergeInto(LibraryManager.library, {
             return 0;
         }
         
-        var data = new Uint8Array(HEAP8.buffer, dataPtr, dataLength);
+        // HEAP8.buffer의 전체 버퍼를 보내지 않도록 데이터를 복사
+        // new Uint8Array(HEAP8.buffer, dataPtr, dataLength)의 .buffer는 전체 HEAP8.buffer를 참조함
+        var data = new Uint8Array(dataLength);
+        for (var i = 0; i < dataLength; i++) {
+            data[i] = HEAP8[dataPtr + i];
+        }
         ws.send(data.buffer);
         return 1;
     },
