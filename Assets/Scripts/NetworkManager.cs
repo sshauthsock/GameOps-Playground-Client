@@ -620,10 +620,20 @@ public class NetworkManager : MonoBehaviour
                 if (config != null && !string.IsNullOrEmpty(config.serverIP))
                 {
                     serverIP = config.serverIP;
-                    // Editor에서는 Railway TCP 포트(36222) 사용 (내부 포트 7777로 매핑됨)
-                    // Railway 포트 매핑: switchback.proxy.rlwy.net:36222 -> :7777
-                    serverPort = config.serverPort; // 설정 파일의 포트 사용 (36222)
-                    Debug.Log($"[NetworkManager] ✅ 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort} (TCP, Railway 매핑: 내부 7777)");
+                    // Editor에서는 TCP 포트가 필요함
+                    // 설정 파일의 포트가 0이면 기본 TCP 포트(7777) 사용
+                    if (config.serverPort > 0)
+                    {
+                        serverPort = config.serverPort;
+                    }
+                    else
+                    {
+                        // Railway HTTP 서비스는 WebGL에서만 포트 없이 사용 가능
+                        // Editor에서는 기본 TCP 포트 사용
+                        serverPort = 7777;
+                        Debug.LogWarning("[NetworkManager] 설정 파일의 포트가 0입니다. Editor에서는 TCP 포트가 필요하므로 기본값(7777)을 사용합니다.");
+                    }
+                    Debug.Log($"[NetworkManager] ✅ 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort} (TCP)");
                     return;
                 }
                 else
