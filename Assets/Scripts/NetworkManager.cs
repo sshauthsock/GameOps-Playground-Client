@@ -598,7 +598,9 @@ public class NetworkManager : MonoBehaviour
             }
 #elif UNITY_EDITOR
             // Editor: C# WebSocket 클라이언트 사용 (Railway HTTP 서비스는 TCP 포트를 직접 노출하지 않음)
-            string protocol = "wss://";
+            // [로컬 서버 지원] localhost나 127.0.0.1일 때는 ws:// 사용, 그 외에는 wss:// 사용
+            // 로컬서버 테스트 시 server-config.json 에서 포트 7778 사용.
+            string protocol = (ip == "localhost" || ip == "127.0.0.1") ? "ws://" : "wss://";
             string wsUrl = port > 0 ? $"{protocol}{ip}:{port}" : $"{protocol}{ip}";
             Debug.Log($"[Connect] WebSocket 연결 시도 시작 (Editor): {wsUrl}");
             
