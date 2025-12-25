@@ -74,22 +74,84 @@ public class NetworkManager : MonoBehaviour
     
     private void HandleWebSocketMessage(IntPtr dataPtr, int length)
     {
-        byte[] packet = new byte[length];
-        Marshal.Copy(dataPtr, packet, 0, length);
+        byte[] receivedData = new byte[length];
+        Marshal.Copy(dataPtr, receivedData, 0, length);
         
-        Debug.Log($"[HandleWebSocketMessage] 서버로부터 메시지 수신: {length} 바이트");
+        Debug.Log($"[HandleWebSocketMessage] 서버로부터 데이터 수신: {length} 바이트");
         
-        // 패킷 ID 확인 (최소 4바이트 필요)
-        if (length >= 4)
+        // [핵심 수정] WebGL에서도 패킷 분할 처리를 위해 receiveBuffer 사용
+        // Editor와 동일한 로직으로 불완전한 패킷을 처리
+        lock (_receiveBuffer)
         {
-            ushort messageID = (ushort)(packet[0] | (packet[1] << 8));
-            Debug.Log($"[HandleWebSocketMessage] 패킷 ID: {messageID}, 길이: {length} 바이트");
-        }
-        
-        lock (_packetQueue)
-        {
-            _packetQueue.Enqueue(packet);
-            Debug.Log($"[HandleWebSocketMessage] 패킷 큐에 추가. 현재 큐 크기: {_packetQueue.Count}");
+            // 받은 데이터를 receiveBuffer에 추가
+            _receiveBuffer.AddRange(receivedData);
+            Debug.Log($"[HandleWebSocketMessage] receiveBuffer에 추가. 현재 버퍼 크기: {_receiveBuffer.Count} 바이트");
+
+            // 완전한 패킷 추출
+            while (_receiveBuffer.Count >= 4) // 최소 헤더 크기 (2바이트 길이 + 2바이트 ID)
+            {
+                // 패킷 길이 읽기 (첫 2바이트, little-endian)
+                // Editor 버전과 동일하게 BitConverter 사용 (더 안정적)
+                byte[] lengthBytes = new byte[2];
+                lengthBytes[0] = _receiveBuffer[0];
+                lengthBytes[1] = _receiveBuffer[1];
+                if (!BitConverter.IsLittleEndian)
+                {
+                    Array.Reverse(lengthBytes);
+                }
+                ushort packetLength = BitConverter.ToUInt16(lengthBytes, 0);
+                
+                // [핵심 수정] 패킷 길이 유효성 검증 추가 - 버퍼 동기화 문제 방지
+                if (packetLength < 4 || packetLength > 4096) // 최소 4바이트, 최대 4KB
+                {
+                    Debug.LogError($"[HandleWebSocketMessage] ⚠️ 비정상적인 패킷 길이 감지: {packetLength} 바이트. 버퍼를 비우고 재동기화 시도.");
+                    _receiveBuffer.Clear();
+                    break;
+                }
+
+                // 패킷이 완전히 도착했는지 확인
+                if (_receiveBuffer.Count >= packetLength)
+                {
+                    // 완전한 패킷 추출
+                    byte[] completePacket = new byte[packetLength];
+                    _receiveBuffer.CopyTo(0, completePacket, 0, packetLength);
+                    _receiveBuffer.RemoveRange(0, packetLength);
+                    
+                    // 패킷 ID 확인 (디버깅용) - PacketReader와 동일한 방식으로 읽기
+                    if (packetLength >= 4)
+                    {
+                        // PacketReader.ReadHeader()와 동일한 방식: little-endian으로 읽기
+                        ushort messageID = BitConverter.ToUInt16(completePacket, 2);
+                        Debug.Log($"[HandleWebSocketMessage] 완전한 패킷 수신! ID: {messageID}, 길이: {packetLength} 바이트");
+                    }
+                    
+                    // 패킷 큐에 추가
+                    lock (_packetQueue)
+                    {
+                        const int MAX_QUEUE_SIZE = 100; // 최대 큐 크기
+                        if (_packetQueue.Count >= MAX_QUEUE_SIZE)
+                        {
+                            Debug.LogWarning($"[HandleWebSocketMessage] ⚠️ 패킷 큐가 가득 찼습니다! ({_packetQueue.Count}개) 오래된 패킷을 버립니다.");
+                            _packetQueue.Dequeue(); // 오래된 패킷 제거
+                        }
+                        _packetQueue.Enqueue(completePacket);
+                        if (_packetQueue.Count > 50)
+                        {
+                            Debug.LogWarning($"[HandleWebSocketMessage] ⚠️ 패킷 큐가 많이 쌓였습니다! ({_packetQueue.Count}개) 처리 지연 가능성.");
+                        }
+                        else
+                        {
+                            Debug.Log($"[HandleWebSocketMessage] 패킷 큐에 추가. 현재 큐 크기: {_packetQueue.Count}");
+                        }
+                    }
+                }
+                else
+                {
+                    // 패킷이 아직 완전히 도착하지 않음
+                    Debug.Log($"[HandleWebSocketMessage] 불완전한 패킷 대기 중... (필요: {packetLength} 바이트, 현재: {_receiveBuffer.Count} 바이트)");
+                    break;
+                }
+            }
         }
     }
     
@@ -1248,6 +1310,7 @@ public class NetworkManager : MonoBehaviour
                 ProcessGameStartNotify(reader);
                 break;
             case 430:
+                Debug.Log($"[Handle] ⚠️⚠️⚠️ Turn Start Notify 패킷 수신! ID: 430 (총 길이: {header.TotalLength}바이트) - ProcessTurnStartNotify 호출");
                 ProcessTurnStartNotify(reader);
                 break;
             case 400:
