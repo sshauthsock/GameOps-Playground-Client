@@ -124,46 +124,85 @@ public class RoomManager : MonoBehaviour
                 }
             }
             
-            // UI 업데이트
+            // [핵심 수정] 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
+            // ConnectedUserID가 설정될 때까지 대기 후 추가 시도
+            if (_isHost && NetworkManager.Instance != null)
+            {
+                StartCoroutine(AddHostToPlayerListDelayed());
+            }
+            
+            // UI 업데이트 (플레이어 목록 추가 후)
             if (roomUI != null)
             {
                 Debug.Log($"[RoomManager] InitializeRoomInfo - UI 업데이트: ID={pendingRoomID}, Name={_currentRoomName}, Players={_currentPlayerCount}/{_maxPlayers}");
                 roomUI.UpdateRoomInfo(pendingRoomID, _currentRoomName, _currentPlayerCount, _maxPlayers);
+                
+                // 플레이어 목록도 UI에 업데이트
+                if (_playerList.Count > 0)
+                {
+                    roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
+                }
             }
             else
             {
                 Debug.LogError("[RoomManager] InitializeRoomInfo - roomUI가 null입니다! RoomScene에 RoomUI 컴포넌트가 있는지 확인하세요.");
             }
-            
-            // 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
-            if (_isHost && NetworkManager.Instance.ConnectedUserName != null)
+        }
+    }
+
+    /// <summary>
+    /// 방장 자신을 플레이어 목록에 추가하는 코루틴 (지연 실행)
+    /// ConnectedUserID가 설정될 때까지 대기
+    /// </summary>
+    private System.Collections.IEnumerator AddHostToPlayerListDelayed()
+    {
+        // ConnectedUserID와 ConnectedUserName이 설정될 때까지 대기 (최대 2초)
+        float timeout = 2f;
+        float elapsed = 0f;
+        while ((NetworkManager.Instance.ConnectedUserID == -1 || string.IsNullOrEmpty(NetworkManager.Instance.ConnectedUserName)) && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (NetworkManager.Instance == null) yield break;
+        
+        int myUserID = NetworkManager.Instance.ConnectedUserID;
+        string myUserName = NetworkManager.Instance.ConnectedUserName;
+        
+        if (myUserID != -1 && !string.IsNullOrEmpty(myUserName))
+        {
+            // 이미 추가되어 있는지 확인
+            bool exists = false;
+            foreach (var player in _playerList)
             {
-                int myUserID = NetworkManager.Instance.ConnectedUserID;
-                if (myUserID != -1)
+                if (player.PlayerID == myUserID)
                 {
-                    // 이미 추가되어 있는지 확인
-                    bool exists = false;
-                    foreach (var player in _playerList)
-                    {
-                        if (player.PlayerID == myUserID)
-                        {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!exists)
-                    {
-                        Debug.Log($"[RoomManager] 방장 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName={NetworkManager.Instance.ConnectedUserName}");
-                        _playerList.Add(new PlayerReadyData(myUserID, NetworkManager.Instance.ConnectedUserName, false));
-                        
-                        if (roomUI != null)
-                        {
-                            roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
-                        }
-                    }
+                    exists = true;
+                    break;
                 }
             }
+            
+            if (!exists)
+            {
+                Debug.Log($"[RoomManager] AddHostToPlayerListDelayed - 방장 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName={myUserName}");
+                _playerList.Add(new PlayerReadyData(myUserID, myUserName, false));
+                _currentPlayerCount = _playerList.Count; // 플레이어 수 업데이트
+                
+                // UI 업데이트
+                if (roomUI != null)
+                {
+                    roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
+                }
+            }
+            else
+            {
+                Debug.Log($"[RoomManager] AddHostToPlayerListDelayed - 방장 자신이 이미 플레이어 목록에 있습니다. UserID={myUserID}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[RoomManager] AddHostToPlayerListDelayed - 방장 정보가 불완전합니다. UserID={myUserID}, UserName={myUserName}");
         }
     }
 

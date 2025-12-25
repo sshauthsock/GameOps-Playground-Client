@@ -1395,6 +1395,13 @@ public class NetworkManager : MonoBehaviour
             // RoomManager가 아직 초기화되지 않았을 수 있으므로 씬 전환 후 처리
             PendingRoomID = roomID;
             
+            // [핵심 수정] 방장이 방을 생성할 때도 자신을 플레이어 목록에 추가하기 위한 코루틴 시작
+            // 방 생성 시에는 UserEnter Notify가 없으므로 명시적으로 추가해야 함
+            if (!string.IsNullOrEmpty(ConnectedUserName))
+            {
+                StartCoroutine(AddSelfToPlayerListAfterSceneLoad(roomID));
+            }
+            
             // 방 생성 성공 시 자동으로 방에 입장
             SendJoinRoomRequest(roomID);
             
@@ -1687,6 +1694,13 @@ public class NetworkManager : MonoBehaviour
                 // 씬 전환 전에 방 ID 저장 (씬 전환 후 RoomManager에 전달하기 위해)
                 PendingRoomID = roomID;
                 
+                // [핵심 수정] 모든 클라이언트(방장 포함)가 방에 입장할 때 자신을 플레이어 목록에 추가
+                // 서버는 입장한 플레이어에게 UserEnter Notify를 보내지 않으므로, 클라이언트가 직접 추가해야 함
+                if (!string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    StartCoroutine(AddSelfToPlayerListAfterSceneLoad(roomID));
+                }
+                
                 // [핵심 수정] 방 입장 직후 방 목록을 요청해서 방 이름과 플레이어 수를 가져오기
                 // 이렇게 하면 RoomManager.InitializeRoomInfo에서 방 정보를 제대로 표시할 수 있음
                 SendRoomListRequest();
@@ -1712,6 +1726,129 @@ public class NetworkManager : MonoBehaviour
 
     // ProcessRoomInfoResponse는 지침서에 없으므로 제거됨
     // 방 정보는 UserEnter Notify 등을 통해 업데이트됨
+
+    /// <summary>
+    /// 모든 클라이언트가 방에 입장한 후 자신을 플레이어 목록에 추가하는 코루틴
+    /// 서버는 입장한 플레이어에게 UserEnter Notify를 보내지 않으므로, 클라이언트가 직접 추가해야 함
+    /// </summary>
+    private System.Collections.IEnumerator AddSelfToPlayerListAfterSceneLoad(int roomID)
+    {
+        // RoomScene이 로드될 때까지 대기
+        yield return new WaitForSeconds(0.5f);
+        
+        // RoomManager가 준비될 때까지 대기
+        float timeout = 3f;
+        float elapsed = 0f;
+        while (RoomManager.Instance == null && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (RoomManager.Instance == null)
+        {
+            Debug.LogError("[AddSelfToPlayerListAfterSceneLoad] RoomManager.Instance가 3초 내에 생성되지 않았습니다.");
+            yield break;
+        }
+        
+        // ConnectedUserID와 ConnectedUserName이 설정될 때까지 대기
+        elapsed = 0f;
+        while ((ConnectedUserID == -1 || string.IsNullOrEmpty(ConnectedUserName)) && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (ConnectedUserID == -1 || string.IsNullOrEmpty(ConnectedUserName))
+        {
+            Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID({ConnectedUserID}) 또는 ConnectedUserName('{ConnectedUserName}')가 설정되지 않았습니다.");
+            // ConnectedUserName이 있으면 UserID 없이도 시도
+            if (string.IsNullOrEmpty(ConnectedUserName))
+            {
+                yield break;
+            }
+        }
+        
+        // 자신이 플레이어 목록에 있는지 확인
+        var playerList = RoomManager.Instance.GetPlayerList();
+        bool selfExists = false;
+        int myUserID = ConnectedUserID;
+        
+        if (myUserID != -1)
+        {
+            foreach (var player in playerList)
+            {
+                if (player.PlayerID == myUserID)
+                {
+                    selfExists = true;
+                    break;
+                }
+            }
+        }
+        
+        // UserID가 없으면 UserName으로 찾기
+        if (!selfExists && myUserID == -1 && !string.IsNullOrEmpty(ConnectedUserName))
+        {
+            foreach (var player in playerList)
+            {
+                if (player.PlayerName == ConnectedUserName)
+                {
+                    selfExists = true;
+                    myUserID = player.PlayerID; // UserID도 설정
+                    ConnectedUserID = myUserID; // NetworkManager에도 저장
+                    break;
+                }
+            }
+        }
+        
+        // 자신이 플레이어 목록에 없으면 추가
+        if (!selfExists && !string.IsNullOrEmpty(ConnectedUserName))
+        {
+            // UserID가 없으면 UserName으로 플레이어 목록에서 찾기 시도
+            if (myUserID == -1)
+            {
+                Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID가 설정되지 않았습니다. UserName으로 찾기 시도: UserName='{ConnectedUserName}'");
+                
+                // UserEnter Notify를 받을 때까지 대기 (최대 2초)
+                elapsed = 0f;
+                while (ConnectedUserID == -1 && elapsed < 2f)
+                {
+                    yield return new WaitForSeconds(0.1f);
+                    elapsed += 0.1f;
+                }
+                
+                if (ConnectedUserID != -1)
+                {
+                    myUserID = ConnectedUserID;
+                    Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] UserEnter Notify를 받아 ConnectedUserID 설정: {myUserID}");
+                }
+                else
+                {
+                    // [핵심 수정] UserID를 찾을 수 없어도, 서버가 UserEnter Notify를 보내지 않을 수 있으므로
+                    // 방에 있는 다른 플레이어의 UserEnter Notify를 받을 때까지 대기
+                    // 다른 플레이어가 입장하면 그때 자신도 추가될 수 있음
+                    Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID를 찾을 수 없습니다. 다른 플레이어의 UserEnter Notify를 기다립니다.");
+                    // 일단 건너뛰고, 다른 플레이어의 UserEnter Notify를 받을 때 처리됨
+                    // 또는 방 목록 응답에서 플레이어 수를 확인하여 자신을 추가할 수 있음
+                    yield break;
+                }
+            }
+            
+            if (myUserID != -1)
+            {
+                Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName='{ConnectedUserName}'");
+                RoomManager.Instance.OnUserEntered(myUserID, ConnectedUserName);
+            }
+        }
+        else if (selfExists)
+        {
+            Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] 자신이 이미 플레이어 목록에 있습니다. UserID={myUserID}, UserName='{ConnectedUserName}'");
+        }
+        else
+        {
+            Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] 자신의 정보가 불완전합니다. UserID={myUserID}, UserName='{ConnectedUserName}'");
+        }
+    }
 
     private void ProcessReadyNotify(PacketReader reader)
     {
@@ -2285,9 +2422,11 @@ public class NetworkManager : MonoBehaviour
                 PlayerManager.Instance.UpdatePlayerLocalStatus();
             }
 
-            // RoomManager에 사용자 입장 알림 전달
+            // [핵심 수정] RoomManager에 모든 사용자 입장 알림 전달 (자신 포함, 모든 클라이언트에서 동일하게)
+            // 이렇게 하면 각 클라이언트에서 모든 플레이어를 볼 수 있음
             if (RoomManager.Instance != null)
             {
+                Debug.Log($"[UserEnter Notify] RoomManager에 사용자 입장 알림 전달: UserID={userID}, UserName='{userName}'");
                 RoomManager.Instance.OnUserEntered(userID, userName);
                 
                 // 방 정보가 없으면 기본값으로 설정
@@ -2300,26 +2439,46 @@ public class NetworkManager : MonoBehaviour
                 }
             }
             
-            // 방장이 방을 생성한 경우, 자신의 UserEnter Notify를 받지 못할 수 있으므로
-            // 방장 자신을 플레이어 목록에 추가
-            if (CreatedRoomID != -1 && isMyUser && RoomManager.Instance != null)
+            // [핵심 수정] 방장이 방을 생성한 경우, 자신의 UserEnter Notify를 받지 못할 수 있으므로
+            // 방장 자신을 플레이어 목록에 추가 (다른 클라이언트가 입장할 때도 방장을 볼 수 있도록)
+            if (CreatedRoomID != -1 && RoomManager.Instance != null)
             {
-                // 이미 추가되어 있는지 확인
+                // 방장 자신이 플레이어 목록에 있는지 확인
                 var playerList = RoomManager.Instance.GetPlayerList();
-                bool alreadyExists = false;
-                foreach (var player in playerList)
+                bool hostExists = false;
+                int hostUserID = ConnectedUserID != -1 ? ConnectedUserID : -1;
+                string hostUserName = ConnectedUserName;
+                
+                // ConnectedUserID가 설정되지 않았으면 ConnectedUserName으로 찾기
+                if (hostUserID == -1 && !string.IsNullOrEmpty(hostUserName))
                 {
-                    if (player.PlayerID == userID)
+                    foreach (var player in playerList)
                     {
-                        alreadyExists = true;
-                        break;
+                        if (player.PlayerName == hostUserName)
+                        {
+                            hostUserID = player.PlayerID;
+                            hostExists = true;
+                            break;
+                        }
+                    }
+                }
+                else if (hostUserID != -1)
+                {
+                    foreach (var player in playerList)
+                    {
+                        if (player.PlayerID == hostUserID)
+                        {
+                            hostExists = true;
+                            break;
+                        }
                     }
                 }
                 
-                if (!alreadyExists)
+                // 방장 자신이 플레이어 목록에 없으면 추가
+                if (!hostExists && hostUserID != -1 && !string.IsNullOrEmpty(hostUserName))
                 {
-                    Debug.Log($"[ProcessUserEnterNotify] 방장 자신을 플레이어 목록에 추가: UserID={userID}, UserName={userName}");
-                    RoomManager.Instance.OnUserEntered(userID, userName);
+                    Debug.Log($"[UserEnter Notify] 방장 자신을 플레이어 목록에 추가: UserID={hostUserID}, UserName='{hostUserName}'");
+                    RoomManager.Instance.OnUserEntered(hostUserID, hostUserName);
                 }
             }
         }
