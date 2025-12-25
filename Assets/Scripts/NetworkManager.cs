@@ -1688,6 +1688,29 @@ public class NetworkManager : MonoBehaviour
             {
                 var playerList = RoomManager.Instance.GetPlayerList();
                 
+                // [핵심 수정] 마지막 접속 클라이언트가 자신의 UserEnter Notify를 받지 못했을 수 있으므로
+                // 자신이 플레이어 목록에 없으면 추가
+                if (ConnectedUserID != -1 && !string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    bool selfExists = false;
+                    foreach (var player in playerList)
+                    {
+                        if (player.PlayerID == ConnectedUserID)
+                        {
+                            selfExists = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!selfExists)
+                    {
+                        Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 자신이 플레이어 목록에 없습니다. 추가합니다. UserID: {ConnectedUserID}, UserName: {ConnectedUserName}");
+                        RoomManager.Instance.OnUserEntered(ConnectedUserID, ConnectedUserName);
+                        // 목록 다시 가져오기
+                        playerList = RoomManager.Instance.GetPlayerList();
+                    }
+                }
+                
                 // [핵심 수정] 모든 클라이언트에서 동일한 순서를 보장하기 위해 PlayerID로 정렬
                 // 이렇게 하면 모든 클라이언트에서 동일한 플레이어 순서, 색상, 위치를 보장할 수 있음
                 var sortedPlayerList = new List<PlayerReadyData>(playerList);
@@ -2027,6 +2050,28 @@ public class NetworkManager : MonoBehaviour
                 }
             }
 
+            // [핵심 수정] RoomManager가 null이거나 플레이어 목록이 비어있을 때 처리
+            else
+            {
+                Debug.LogError("[ProcessGameStartNotify] RoomManager.Instance가 null입니다!");
+                Debug.LogError("[ProcessGameStartNotify] 플레이어 목록을 가져올 수 없습니다. 게임을 시작할 수 없습니다.");
+                
+                // 폴백: ConnectedUserID가 있으면 자신만 생성
+                if (ConnectedUserID != -1 && !string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    Debug.LogWarning("[ProcessGameStartNotify] 폴백: 자신만 플레이어 목록에 추가합니다.");
+                    _gamePlayerList.Clear();
+                    _gamePlayerList.Add(new PlayerInfo(ConnectedUserID, ConnectedUserName));
+                }
+            }
+            
+            // [핵심 수정] _gamePlayerList가 비어있으면 게임을 시작할 수 없음
+            if (_gamePlayerList == null || _gamePlayerList.Count == 0)
+            {
+                Debug.LogError("[ProcessGameStartNotify] ❌ 플레이어 목록이 비어있습니다. 게임을 시작할 수 없습니다.");
+                return;
+            }
+            
             // 첫 턴 플레이어 설정
             _currentTurnPlayerID = firstTurnUserID;
             Debug.Log($"[ProcessGameStartNotify] _currentTurnPlayerID 설정: {_currentTurnPlayerID}");
