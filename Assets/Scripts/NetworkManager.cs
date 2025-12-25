@@ -215,6 +215,7 @@ public class NetworkManager : MonoBehaviour
     private float _lastRoomListRequestTime = 0f;
     private bool _waitingForRoomListResponse = false;
     private int _currentTurnPlayerID = -1; // 현재 턴 플레이어 ID
+    private int _previousTurnPlayerID = -1; // 이전 턴 플레이어 ID (유령 플레이어 대체 처리용)
     public List<PlayerInfo> _gamePlayerList = new List<PlayerInfo>(); // 게임 시작 시 플레이어 목록
     private int _firstUserEnterID = -1; // 첫 번째 UserEnter Notify에서 받은 UserID (임시 식별용)
     private bool _hasReceivedUserEnter = false; // UserEnter Notify를 받았는지 여부
@@ -2336,18 +2337,23 @@ public class NetworkManager : MonoBehaviour
             int turnTimeLimitSec = reader.ReadInt32();
 
             Debug.Log($"[Turn Start Notify] ✅✅✅✅✅ ID 430 수신! 턴 전환! NextPlayerID: {nextPlayerID}, TurnTimeLimitSec: {turnTimeLimitSec}, 내 UserID: {ConnectedUserID}");
-            Debug.Log($"[Turn Start Notify] 이전 턴 플레이어: {_currentTurnPlayerID}, 새로운 턴 플레이어: {nextPlayerID}");
 
-            // [핵심 수정] 중복 패킷 방지: 같은 nextPlayerID를 가진 패킷을 연속으로 받으면 무시
-            if (_currentTurnPlayerID == nextPlayerID && _currentTurnPlayerID != -1)
-            {
-                Debug.LogWarning($"[Turn Start Notify] ⚠️ 중복 패킷 감지! 이미 현재 턴 플레이어({_currentTurnPlayerID})인데 동일한 패킷을 다시 수신했습니다. 무시합니다.");
-                return;
-            }
-
+            // [핵심 수정] 중복 패킷 방지 로직 제거 - 서버가 보낸 모든 턴 전환 패킷을 처리
+            // 이전 로직은 같은 플레이어에게 턴이 다시 돌아올 때(예: 3명 플레이어에서 3턴 후) 패킷을 무시하는 버그가 있었음
+            // 서버가 보낸 모든 턴 전환 패킷은 유효하므로 항상 처리해야 함
+            
             // [핵심 수정] _currentTurnPlayerID를 먼저 업데이트하여, ApplyTurnControlToAllPlayers에서 
             // GetCurrentTurnPlayerID()를 호출할 때 올바른 값을 반환하도록 보장
+            _previousTurnPlayerID = _currentTurnPlayerID; // 이전 턴 플레이어 ID 저장 (유령 플레이어 대체 처리용)
             _currentTurnPlayerID = nextPlayerID;
+            
+            Debug.Log($"[Turn Start Notify] 이전 턴 플레이어: {_previousTurnPlayerID}, 새로운 턴 플레이어: {nextPlayerID}");
+            
+            // 이전 턴과 동일한 플레이어인 경우에만 경고 로그 (하지만 처리는 계속 진행)
+            if (_previousTurnPlayerID == nextPlayerID && _previousTurnPlayerID != -1)
+            {
+                Debug.LogWarning($"[Turn Start Notify] ⚠️ 이전 턴과 동일한 플레이어({nextPlayerID})입니다. 서버에서 중복 전송되었을 수 있지만 처리합니다.");
+            }
 
             // PlayerController에 턴 정보 전달
             // 플레이어가 아직 생성되지 않았을 수 있으므로, 생성된 경우에만 처리
@@ -2372,6 +2378,8 @@ public class NetworkManager : MonoBehaviour
                 else
                 {
                     Debug.LogWarning($"[Turn Start Notify] ⚠️ 플레이어가 아직 생성되지 않았습니다. GameManager.StartGameLogic() 완료 후 턴 정보가 적용됩니다.");
+                    // [핵심 수정] 플레이어가 생성되지 않았어도 _currentTurnPlayerID는 업데이트했으므로,
+                    // GameManager.StartGameLogic()에서 ApplyPendingTurnControl()이 호출될 때 올바른 턴 정보가 적용됨
                 }
             }
             else
@@ -2407,13 +2415,54 @@ public class NetworkManager : MonoBehaviour
         bool foundNextPlayer = allPlayers.ContainsKey(nextPlayerID);
         Debug.Log($"[ApplyTurnControlToAllPlayers] NextPlayerID {nextPlayerID}가 PlayerManager에 존재하는가? {foundNextPlayer}");
         
-        if (!foundNextPlayer)
+        // [핵심 수정] nextPlayerID가 PlayerManager에 없는 경우 (유령 플레이어 등), 
+        // 다음 유효한 플레이어를 찾아서 대체 사용
+        int actualNextPlayerID = nextPlayerID;
+        if (!foundNextPlayer && allPlayers.Count > 0)
         {
-            Debug.LogError($"[ApplyTurnControlToAllPlayers] ⚠️⚠️⚠️ NextPlayerID {nextPlayerID}가 PlayerManager에 없습니다! 현재 플레이어 목록:");
+            Debug.LogError($"[ApplyTurnControlToAllPlayers] ⚠️⚠️⚠️ NextPlayerID {nextPlayerID}가 PlayerManager에 없습니다! 다음 유효한 플레이어를 찾습니다. 현재 플레이어 목록:");
             foreach (var kvp in allPlayers)
             {
                 Debug.LogError($"[ApplyTurnControlToAllPlayers]   - PlayerID: {kvp.Key}, GameObject: {kvp.Value?.name ?? "null"}");
             }
+            
+            // 이전 턴 플레이어를 기준으로 다음 플레이어 찾기
+            // _previousTurnPlayerID는 ProcessTurnStartNotify에서 저장된 값 사용
+            int previousTurnPlayerID = _previousTurnPlayerID;
+            
+            if (previousTurnPlayerID != -1 && allPlayers.ContainsKey(previousTurnPlayerID))
+            {
+                // 이전 턴 플레이어가 있으면, 그 다음 플레이어를 찾기
+                var sortedPlayerIDs = new List<int>(allPlayers.Keys);
+                sortedPlayerIDs.Sort();
+                
+                int previousIndex = sortedPlayerIDs.IndexOf(previousTurnPlayerID);
+                if (previousIndex >= 0)
+                {
+                    // 다음 플레이어 인덱스 계산 (순환)
+                    int nextIndex = (previousIndex + 1) % sortedPlayerIDs.Count;
+                    actualNextPlayerID = sortedPlayerIDs[nextIndex];
+                    Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 플레이어({previousTurnPlayerID})의 다음 플레이어({actualNextPlayerID})로 턴 전환");
+                }
+                else
+                {
+                    // 이전 턴 플레이어를 찾지 못한 경우, 첫 번째 플레이어 사용
+                    actualNextPlayerID = sortedPlayerIDs[0];
+                    Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 플레이어를 찾지 못했습니다. 첫 번째 플레이어({actualNextPlayerID})로 턴 전환");
+                }
+            }
+            else
+            {
+                // 이전 턴 플레이어 정보가 없는 경우, 첫 번째 플레이어 사용
+                var sortedPlayerIDs = new List<int>(allPlayers.Keys);
+                sortedPlayerIDs.Sort();
+                actualNextPlayerID = sortedPlayerIDs[0];
+                Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 정보가 없습니다. 첫 번째 플레이어({actualNextPlayerID})로 턴 전환");
+            }
+            
+            // _currentTurnPlayerID도 업데이트하여 일관성 유지
+            _currentTurnPlayerID = actualNextPlayerID;
+            Debug.LogWarning($"[ApplyTurnControlToAllPlayers] ✅ 대체 플레이어 ID: {actualNextPlayerID} (원래 서버에서 받은 ID: {nextPlayerID})");
         }
         
         // 모든 플레이어에게 턴 정보 업데이트
@@ -2427,14 +2476,14 @@ public class NetworkManager : MonoBehaviour
                 var controller = playerObj.GetComponent<PlayerController>();
                 if (controller != null)
                 {
-                    // nextPlayerID는 서버에서 보낸 UserID이므로, 이것이 ConnectedUserID와 일치해야 함
+                    // [핵심 수정] actualNextPlayerID 사용 (유령 플레이어 대체 처리 후)
                     // 로컬 플레이어이고, 현재 턴이 로컬 플레이어의 턴이면 컨트롤 가능
-                    // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 일관성 보장
+                    // ConnectedUserID를 단일 소스로 사용하여 일관성 보장
                     bool isLocalPlayer = (playerID == ConnectedUserID && ConnectedUserID != -1);
-                    bool isCurrentTurn = (playerID == nextPlayerID);
+                    bool isCurrentTurn = (playerID == actualNextPlayerID);
                     bool canControl = isLocalPlayer && isCurrentTurn;
                     
-                    Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
+                    Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, ActualNextPlayerID: {actualNextPlayerID} (서버에서 받은 ID: {nextPlayerID}), ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
                     
                     // [핵심 수정] 모든 플레이어에게 SetCanControl 호출
                     // 로컬 플레이어이고 현재 턴이면 true, 아니면 false
