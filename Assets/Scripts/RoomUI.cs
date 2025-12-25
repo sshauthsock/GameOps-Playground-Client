@@ -75,6 +75,11 @@ public class RoomUI : MonoBehaviour
             PlayerCountText.fontSize = 32;
             PlayerCountText.fontStyle = FontStyles.Bold;
             PlayerCountText.color = Color.white;
+            Debug.Log($"[RoomUI] PlayerCountText 업데이트: {PlayerCountText.text}");
+        }
+        else
+        {
+            Debug.LogWarning("[RoomUI] PlayerCountText가 null입니다!");
         }
     }
 

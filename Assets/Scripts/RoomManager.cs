@@ -92,13 +92,47 @@ public class RoomManager : MonoBehaviour
             if (string.IsNullOrEmpty(_currentRoomName))
             {
                 string pendingRoomName = NetworkManager.Instance.PendingRoomName;
-                _currentRoomName = !string.IsNullOrEmpty(pendingRoomName) ? pendingRoomName : $"Room #{pendingRoomID}";
+                if (!string.IsNullOrEmpty(pendingRoomName))
+                {
+                    _currentRoomName = pendingRoomName;
+                    Debug.Log($"[RoomManager] PendingRoomName에서 방 이름 가져옴: {_currentRoomName}");
+                }
+                else
+                {
+                    _currentRoomName = $"Room #{pendingRoomID}";
+                    Debug.LogWarning($"[RoomManager] PendingRoomName이 비어있어서 기본값 사용: {_currentRoomName}");
+                    // 방 목록을 요청해서 실제 방 이름을 가져오기
+                    if (NetworkManager.Instance != null)
+                    {
+                        NetworkManager.Instance.SendRoomListRequest();
+                        Debug.Log("[RoomManager] 방 목록 요청 전송 (방 이름 가져오기 위해)");
+                    }
+                }
+            }
+            
+            // 플레이어 수와 최대 인원 설정
+            _currentPlayerCount = _playerList.Count;
+            _maxPlayers = 5; // 기본 최대 인원
+            
+            // roomUI가 null이면 다시 찾기
+            if (roomUI == null)
+            {
+                roomUI = FindFirstObjectByType<RoomUI>();
+                if (roomUI != null)
+                {
+                    Debug.Log("[RoomManager] InitializeRoomInfo에서 roomUI를 찾았습니다.");
+                }
             }
             
             // UI 업데이트
             if (roomUI != null)
             {
+                Debug.Log($"[RoomManager] InitializeRoomInfo - UI 업데이트: ID={pendingRoomID}, Name={_currentRoomName}, Players={_currentPlayerCount}/{_maxPlayers}");
                 roomUI.UpdateRoomInfo(pendingRoomID, _currentRoomName, _currentPlayerCount, _maxPlayers);
+            }
+            else
+            {
+                Debug.LogError("[RoomManager] InitializeRoomInfo - roomUI가 null입니다! RoomScene에 RoomUI 컴포넌트가 있는지 확인하세요.");
             }
             
             // 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
@@ -205,9 +239,24 @@ public class RoomManager : MonoBehaviour
 
         Debug.Log($"[RoomManager] 방 정보 업데이트: ID={roomID}, Name={roomName}, Players={playerCount}/{maxPlayers}");
 
+        // roomUI가 null이면 다시 찾기
+        if (roomUI == null)
+        {
+            roomUI = FindFirstObjectByType<RoomUI>();
+            if (roomUI != null)
+            {
+                Debug.Log("[RoomManager] UpdateRoomInfo에서 roomUI를 찾았습니다.");
+            }
+        }
+
         if (roomUI != null)
         {
+            Debug.Log($"[RoomManager] UpdateRoomInfo - UI 업데이트 호출: ID={roomID}, Name={roomName}, Players={playerCount}/{maxPlayers}");
             roomUI.UpdateRoomInfo(roomID, roomName, playerCount, maxPlayers);
+        }
+        else
+        {
+            Debug.LogError("[RoomManager] UpdateRoomInfo - roomUI가 null입니다! RoomScene에 RoomUI 컴포넌트가 있는지 확인하세요.");
         }
     }
 

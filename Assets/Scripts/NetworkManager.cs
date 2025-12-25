@@ -1437,6 +1437,23 @@ public class NetworkManager : MonoBehaviour
 
             Debug.Log($"총 {roomCount}개의 방 목록 처리 완료. LobbyManager.Instance 체크 중...");
 
+        // [핵심 수정] RoomManager가 있고 현재 방에 속해있으면 방 이름 업데이트
+        if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID != -1)
+        {
+            int currentRoomID = RoomManager.Instance.CurrentRoomID;
+            foreach (var room in roomList)
+            {
+                if (room.RoomID == currentRoomID)
+                {
+                    Debug.Log($"[RoomList] 현재 방({currentRoomID})의 이름을 업데이트: {room.RoomName}");
+                    RoomManager.Instance.UpdateRoomInfo(currentRoomID, room.RoomName, room.CurrentUserCount, 5);
+                    // PendingRoomName도 업데이트 (다음 씬 전환 시 사용)
+                    PendingRoomName = room.RoomName;
+                    break;
+                }
+            }
+        }
+
         if (LobbyManager.Instance != null)
         {
                 Debug.Log($"[RoomList] LobbyManager.Instance 발견. 방 목록 업데이트 중...");
@@ -1669,6 +1686,11 @@ public class NetworkManager : MonoBehaviour
                 
                 // 씬 전환 전에 방 ID 저장 (씬 전환 후 RoomManager에 전달하기 위해)
                 PendingRoomID = roomID;
+                
+                // [핵심 수정] 방 입장 직후 방 목록을 요청해서 방 이름과 플레이어 수를 가져오기
+                // 이렇게 하면 RoomManager.InitializeRoomInfo에서 방 정보를 제대로 표시할 수 있음
+                SendRoomListRequest();
+                Debug.Log($"[ProcessJoinRoomResponse] 방 입장 성공. 방 목록 요청 전송 (방 정보 가져오기 위해)");
                 
                 // UserEnter Notify 플래그 리셋 (새 방에 입장하므로)
                 _hasReceivedUserEnter = false;
