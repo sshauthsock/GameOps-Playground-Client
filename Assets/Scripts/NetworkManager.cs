@@ -152,6 +152,38 @@ public class NetworkManager : MonoBehaviour
             WebSocket_FreeString(_webSocketIdPtr);
             _webSocketIdPtr = IntPtr.Zero;
         }
+        
+        // [핵심 수정] 비정상 종료(1006)인 경우 자동 재연결 시도
+        // 1006: Abnormal Closure (브라우저 종료, 네트워크 오류 등)
+        if (code == 1006)
+        {
+            Debug.LogWarning("[Connect] 비정상 종료 감지 (코드: 1006). 3초 후 자동 재연결을 시도합니다...");
+            StartCoroutine(ReconnectAfterDelay(3f));
+        }
+    }
+    
+    private System.Collections.IEnumerator ReconnectAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        
+        // 로비 씬에 있을 때만 재연결 시도
+        if (SceneManager.GetActiveScene().buildIndex == 1) // LobbyScene
+        {
+            Debug.Log("[Connect] 자동 재연결 시도 중...");
+            Connect();
+            
+            // 재연결 후 로그인 요청 전송
+            yield return new WaitForSeconds(1f);
+            if (IsConnected() && !string.IsNullOrEmpty(ConnectedUserName))
+            {
+                Debug.Log($"[Connect] 재연결 성공. 로그인 요청 전송: {ConnectedUserName}");
+                SendLoginRequest(ConnectedUserName);
+            }
+        }
+        else
+        {
+            Debug.Log("[Connect] 로비 씬이 아니므로 재연결을 건너뜁니다.");
+        }
     }
 #elif UNITY_EDITOR
     // Editor: C# WebSocket 클라이언트 사용 (Railway HTTP 서비스는 TCP 포트를 직접 노출하지 않음)
@@ -178,6 +210,10 @@ public class NetworkManager : MonoBehaviour
     public int CreatedRoomID { get; private set; } = -1; // 생성한 방 ID (방장 추적용)
     public int PendingRoomID { get; private set; } = -1; // 씬 전환 중인 방 ID (RoomManager 설정용)
     public string PendingRoomName { get; private set; } = null; // 씬 전환 중인 방 이름 (RoomManager 설정용)
+    
+    // [핵심 수정] 방 목록 요청 후 응답 대기 상태 추적
+    private float _lastRoomListRequestTime = 0f;
+    private bool _waitingForRoomListResponse = false;
     private int _currentTurnPlayerID = -1; // 현재 턴 플레이어 ID
     public List<PlayerInfo> _gamePlayerList = new List<PlayerInfo>(); // 게임 시작 시 플레이어 목록
     private int _firstUserEnterID = -1; // 첫 번째 UserEnter Notify에서 받은 UserID (임시 식별용)
@@ -1313,6 +1349,10 @@ public class NetworkManager : MonoBehaviour
         try
     {
         Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
+        
+        // [핵심 수정] 방 목록 응답을 받았으므로 대기 상태 해제
+        _waitingForRoomListResponse = false;
+        
         List<RoomData> roomList = new List<RoomData>();
         int roomCount = reader.ReadInt32();
             Debug.Log($"[RoomList] 방 개수: {roomCount}");
@@ -1340,11 +1380,40 @@ public class NetworkManager : MonoBehaviour
         {
                 Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}");
                 Debug.LogWarning("방 목록을 받았지만 LobbyScene이 아니거나 LobbyManager가 아직 초기화되지 않았습니다.");
+                
+                // [핵심 수정] LobbyManager가 아직 준비되지 않았으면 코루틴으로 대기 후 전달
+                StartCoroutine(WaitForLobbyManagerAndUpdateRoomList(roomList));
             }
         }
         catch (Exception ex)
         {
             Debug.LogError($"[RoomList] 방 목록 처리 중 오류 발생: {ex.Message}\n{ex.StackTrace}");
+            // 오류 발생 시에도 대기 상태 해제
+            _waitingForRoomListResponse = false;
+        }
+    }
+    
+    private IEnumerator WaitForLobbyManagerAndUpdateRoomList(List<RoomData> roomList)
+    {
+        Debug.Log("[WaitForLobbyManagerAndUpdateRoomList] LobbyManager가 준비될 때까지 대기 중...");
+        
+        // LobbyManager.Instance가 준비될 때까지 대기
+        float timeout = 5f;
+        float elapsed = 0f;
+        while (LobbyManager.Instance == null && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+
+        if (LobbyManager.Instance != null)
+        {
+            Debug.Log($"[WaitForLobbyManagerAndUpdateRoomList] LobbyManager 준비 완료. 방 목록 업데이트 중... (방 {roomList.Count}개)");
+            LobbyManager.Instance.UpdateRoomList(roomList);
+        }
+        else
+        {
+            Debug.LogError("[WaitForLobbyManagerAndUpdateRoomList] LobbyManager.Instance가 5초 내에 생성되지 않았습니다. 방 목록을 업데이트할 수 없습니다.");
         }
     }
 
@@ -1447,9 +1516,30 @@ public class NetworkManager : MonoBehaviour
             return;
         }
         
+        // [핵심 수정] 방 목록 요청 전송 및 응답 대기 상태 설정
+        _lastRoomListRequestTime = Time.time;
+        _waitingForRoomListResponse = true;
+        
         byte[] roomListPacket = MakeRoomListRequestPacket();
         SendPacket(roomListPacket);
         Debug.Log("ID 290 (RoomList Req) 패킷이 M3 서버로 전송되었습니다.");
+        
+        // [핵심 수정] 응답이 오지 않으면 재시도하는 코루틴 시작
+        StartCoroutine(CheckRoomListResponseTimeout());
+    }
+    
+    private System.Collections.IEnumerator CheckRoomListResponseTimeout()
+    {
+        // 3초 동안 응답 대기
+        yield return new WaitForSeconds(3f);
+        
+        // 응답을 받지 못했고 여전히 대기 중이면 재시도
+        if (_waitingForRoomListResponse && IsConnected())
+        {
+            Debug.LogWarning("[SendRoomListRequest] 방 목록 응답을 받지 못했습니다. 재시도합니다...");
+            _waitingForRoomListResponse = false; // 재시도 전 플래그 리셋
+            SendRoomListRequest(); // 재시도
+        }
     }
 
     private byte[] MakeRoomListRequestPacket()
@@ -2115,8 +2205,39 @@ public class NetworkManager : MonoBehaviour
 
             if (success)
             {
-                Debug.Log("[LeaveRoom] 방 나가기 성공. LobbyScene으로 이동합니다.");
-                UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+                Debug.Log("[LeaveRoom] 방 나가기 성공.");
+                
+                // [핵심 수정] RoomManager의 CurrentRoomID 초기화 (방 나가기 성공 시)
+                if (RoomManager.Instance != null)
+                {
+                    // RoomManager에 방 ID 초기화 메서드가 없으므로, 직접 접근하여 초기화
+                    // RoomManager는 씬 전환 시 파괴되므로 여기서 초기화할 필요는 없지만,
+                    // 혹시 모를 상황을 대비하여 명시적으로 처리
+                    Debug.Log("[LeaveRoom] RoomManager의 방 정보 초기화 (씬 전환으로 자동 처리됨)");
+                }
+                
+                // CreatedRoomID와 PendingRoomID도 초기화 (다음 방 생성 시 문제가 없도록)
+                CreatedRoomID = -1;
+                PendingRoomID = -1;
+                
+                Debug.Log("[LeaveRoom] CreatedRoomID와 PendingRoomID 초기화 완료.");
+                
+                // [핵심 수정] 현재 씬이 로비 씬이 아니면 로비 씬으로 이동
+                // 이미 로비 씬에 있으면 씬 전환을 하지 않음 (중복 씬 전환 방지)
+                int currentSceneIndex = UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex;
+                if (currentSceneIndex != 1) // LobbyScene이 아니면
+                {
+                    Debug.Log("[LeaveRoom] 로비 씬으로 이동합니다.");
+                    UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+                }
+                else
+                {
+                    Debug.Log("[LeaveRoom] 이미 로비 씬에 있습니다. 씬 전환을 건너뜁니다.");
+                    
+                    // [핵심 수정] 이미 로비 씬에 있으면 방 목록 요청을 다시 전송
+                    // 씬 전환이 없으면 OnSceneLoaded가 호출되지 않아서 방 목록 요청이 전송되지 않을 수 있음
+                    StartCoroutine(WaitForLobbyManagerAndRequestRoomList());
+                }
             }
             else
             {
@@ -2555,12 +2676,100 @@ public class NetworkManager : MonoBehaviour
 
     public void SendCreateRoomRequest(string roomName)
     {
+        // [핵심 수정] 이미 방에 속해있는지 확인하고, 속해있다면 먼저 방을 나가야 함
+        // 게임 종료 후 로비로 돌아왔을 때 서버의 player_room_map에 여전히 남아있을 수 있음
+        // 로비 씬에서는 RoomManager.Instance가 null이므로, CreatedRoomID나 PendingRoomID를 확인
+        bool isInRoom = false;
+        int currentRoomID = -1;
+        
+        if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID != -1)
+        {
+            isInRoom = true;
+            currentRoomID = RoomManager.Instance.CurrentRoomID;
+        }
+        else if (CreatedRoomID != -1 || PendingRoomID != -1)
+        {
+            // RoomManager가 없어도 CreatedRoomID나 PendingRoomID가 있으면 방에 속해있을 수 있음
+            isInRoom = true;
+            currentRoomID = CreatedRoomID != -1 ? CreatedRoomID : PendingRoomID;
+            Debug.Log($"[SendCreateRoomRequest] RoomManager가 없지만 CreatedRoomID({CreatedRoomID}) 또는 PendingRoomID({PendingRoomID})가 있어서 방에 속해있을 수 있습니다.");
+        }
+        
+        if (isInRoom)
+        {
+            Debug.Log($"[SendCreateRoomRequest] 이미 방에 속해있습니다 (RoomID: {currentRoomID}). 먼저 방을 나갑니다.");
+            // 방을 나간 후 방 생성 요청을 보내도록 콜백 설정
+            StartCoroutine(LeaveRoomAndCreateNewRoom(roomName));
+            return;
+        }
+        
         // 방 이름 저장 (나중에 RoomManager에 전달하기 위해)
         PendingRoomName = roomName;
         
         byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
         SendPacket(createPacket);
         Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+    }
+    
+    private System.Collections.IEnumerator LeaveRoomAndCreateNewRoom(string roomName)
+    {
+        // 방 나가기 요청 전송
+        SendLeaveRoomRequest();
+        
+        // 방 나가기 응답을 기다림 (최대 3초)
+        float timeout = 3f;
+        float elapsed = 0f;
+        int initialCreatedRoomID = CreatedRoomID;
+        int initialPendingRoomID = PendingRoomID;
+        
+        // CreatedRoomID와 PendingRoomID가 모두 -1이 될 때까지 대기
+        while (elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+            
+            // RoomManager가 있으면 CurrentRoomID도 확인
+            if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID == -1)
+            {
+                break;
+            }
+            
+            // RoomManager가 없거나 CurrentRoomID가 -1이 아니면 CreatedRoomID와 PendingRoomID 확인
+            if (RoomManager.Instance == null && CreatedRoomID == -1 && PendingRoomID == -1)
+            {
+                break;
+            }
+        }
+        
+        // 방을 나갔는지 확인
+        bool leftRoom = false;
+        if (RoomManager.Instance != null)
+        {
+            leftRoom = (RoomManager.Instance.CurrentRoomID == -1);
+        }
+        else
+        {
+            // RoomManager가 없으면 CreatedRoomID와 PendingRoomID가 모두 -1인지 확인
+            leftRoom = (CreatedRoomID == -1 && PendingRoomID == -1);
+        }
+        
+        if (leftRoom)
+        {
+            Debug.Log("[SendCreateRoomRequest] 방 나가기 완료. 새 방 생성 요청을 전송합니다.");
+            PendingRoomName = roomName;
+            byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
+            SendPacket(createPacket);
+            Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+        }
+        else
+        {
+            Debug.LogWarning($"[SendCreateRoomRequest] 방 나가기 타임아웃 (CreatedRoomID: {CreatedRoomID}, PendingRoomID: {PendingRoomID}). 그래도 방 생성 요청을 전송합니다.");
+            // 타임아웃이어도 방 생성 요청을 전송 (서버가 처리할 것)
+            PendingRoomName = roomName;
+            byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
+            SendPacket(createPacket);
+            Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+        }
     }
 
 
@@ -3023,6 +3232,14 @@ public class NetworkManager : MonoBehaviour
             {
                 Debug.LogWarning("[Game End] GameUI.Instance가 null입니다.");
             }
+            
+            // [핵심 수정] 게임 종료 시 CreatedRoomID와 PendingRoomID만 초기화
+            // 자동 방 나가기는 제거 (사용자가 버튼을 클릭할 때만 방을 나가도록)
+            // 자동 방 나가기는 씬 전환 문제를 일으킬 수 있음
+            Debug.Log($"[Game End] 게임 종료 전 상태 - CreatedRoomID: {CreatedRoomID}, PendingRoomID: {PendingRoomID}");
+            CreatedRoomID = -1;
+            PendingRoomID = -1;
+            Debug.Log("[Game End] CreatedRoomID와 PendingRoomID 초기화 완료 (게임 종료 후 로비에서 새 방 생성 가능)");
         }
         catch (Exception ex)
         {

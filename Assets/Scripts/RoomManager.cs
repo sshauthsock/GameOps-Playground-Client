@@ -155,6 +155,19 @@ public class RoomManager : MonoBehaviour
     {
         _currentRoomID = roomID;
         
+        // [핵심 수정] roomID가 -1이면 방을 나간 것으로 간주하고 초기화
+        if (roomID == -1)
+        {
+            Debug.Log("[RoomManager] 방 나가기 완료. 방 정보 초기화");
+            _currentRoomName = "";
+            _currentPlayerCount = 0;
+            _maxPlayers = 0;
+            _playerList.Clear();
+            _isLocalPlayerReady = false;
+            _isHost = false;
+            return;
+        }
+        
         // 방장 여부 확인 (방을 생성한 사람이 방장)
         if (NetworkManager.Instance != null)
         {

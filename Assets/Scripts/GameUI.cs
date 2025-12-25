@@ -223,6 +223,7 @@ public class GameUI : MonoBehaviour
         if (NetworkManager.Instance != null)
         {
             NetworkManager.Instance.SendLeaveRoomRequest();
+            Debug.Log("[GameUI] 방 나가기 요청 전송");
         }
         else
         {
