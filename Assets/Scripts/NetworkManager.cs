@@ -1461,19 +1461,30 @@ public class NetworkManager : MonoBehaviour
             }
         }
 
-        if (LobbyManager.Instance != null)
+        // [핵심 수정] 현재 씬을 확인하여 LobbyScene일 때만 LobbyManager 업데이트
+        string currentSceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+        bool isLobbyScene = currentSceneName == "LobbyScene" || currentSceneName.Contains("Lobby");
+        
+        if (isLobbyScene)
         {
+            if (LobbyManager.Instance != null)
+            {
                 Debug.Log($"[RoomList] LobbyManager.Instance 발견. 방 목록 업데이트 중...");
-            LobbyManager.Instance.UpdateRoomList(roomList);
+                LobbyManager.Instance.UpdateRoomList(roomList);
+            }
+            else
+            {
+                Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {currentSceneName}");
+                Debug.LogWarning("방 목록을 받았지만 LobbyManager가 아직 초기화되지 않았습니다. 대기 후 업데이트합니다.");
+                
+                // [핵심 수정] LobbyScene이고 LobbyManager가 아직 준비되지 않았으면 코루틴으로 대기 후 전달
+                StartCoroutine(WaitForLobbyManagerAndUpdateRoomList(roomList));
+            }
         }
         else
         {
-                Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}");
-                Debug.LogWarning("방 목록을 받았지만 LobbyScene이 아니거나 LobbyManager가 아직 초기화되지 않았습니다.");
-                
-                // [핵심 수정] LobbyManager가 아직 준비되지 않았으면 코루틴으로 대기 후 전달
-                StartCoroutine(WaitForLobbyManagerAndUpdateRoomList(roomList));
-            }
+            Debug.Log($"[RoomList] 현재 씬이 LobbyScene이 아닙니다 ({currentSceneName}). LobbyManager 업데이트를 건너뜁니다.");
+        }
         }
         catch (Exception ex)
         {
