@@ -413,7 +413,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: 44b10b9dbd00b2840bc53b6e55a1bd8b, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
-  serverIP: gameops-playground-server-production.up.railway.app
+  serverIP: gameops-playground-server.fly.dev
   serverPort: 0
   IS_DUMMY_MODE: 0
   _myUniqueUserName: 

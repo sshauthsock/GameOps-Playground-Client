@@ -1,5 +1,5 @@
 {
-  "serverIP": "gameops-playground-server-production.up.railway.app",
+  "serverIP": "gameops-playground-server.fly.dev",
   "serverPort": 0,
-  "description": "Railway HTTP 서비스. WebSocket 사용, 포트 번호 불필요 (Editor와 WebGL 모두)"
+  "description": "Fly.io HTTP 서비스. WebSocket 사용, 포트 번호 불필요 (Editor와 WebGL 모두)"
 }

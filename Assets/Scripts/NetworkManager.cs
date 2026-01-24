@@ -22,7 +22,7 @@ public class NetworkManager : MonoBehaviour
 {
     public static NetworkManager Instance { get; private set; }
     // [SerializeField] private string serverIP = "127.0.0.1";
-    [SerializeField] private string serverIP = "gameops-playground-server-production.up.railway.app";
+    [SerializeField] private string serverIP = "gameops-playground-server.fly.dev";
 
     [SerializeField] private int serverPort = 0; // WebSocket 사용, 포트 불필요
     
