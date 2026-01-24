@@ -5,6 +5,8 @@ using System.Collections.Generic;
 using System.Net.Sockets;
 using System.Threading;
 using System.Runtime.InteropServices;
+using System.Net.WebSockets;
+using System.Threading.Tasks;
 using UnityEngine;
 using UnityEngine.SceneManagement;
 
@@ -20,9 +22,9 @@ public class NetworkManager : MonoBehaviour
 {
     public static NetworkManager Instance { get; private set; }
     // [SerializeField] private string serverIP = "127.0.0.1";
-    [SerializeField] private string serverIP = "gameops-playground-server-production.up.railway.app";
+    [SerializeField] private string serverIP = "gameops-playground-server.fly.dev";
 
-    [SerializeField] private int serverPort = 7777;
+    [SerializeField] private int serverPort = 0; // WebSocket 사용, 포트 불필요
     
 #if UNITY_WEBGL && !UNITY_EDITOR && false
     // WebGL JavaScript 플러그인 함수 (일시적으로 비활성화 - 빌드 오류 해결)
@@ -72,12 +74,84 @@ public class NetworkManager : MonoBehaviour
     
     private void HandleWebSocketMessage(IntPtr dataPtr, int length)
     {
-        byte[] packet = new byte[length];
-        Marshal.Copy(dataPtr, packet, 0, length);
+        byte[] receivedData = new byte[length];
+        Marshal.Copy(dataPtr, receivedData, 0, length);
         
-        lock (_packetQueue)
+        Debug.Log($"[HandleWebSocketMessage] 서버로부터 데이터 수신: {length} 바이트");
+        
+        // [핵심 수정] WebGL에서도 패킷 분할 처리를 위해 receiveBuffer 사용
+        // Editor와 동일한 로직으로 불완전한 패킷을 처리
+        lock (_receiveBuffer)
         {
-            _packetQueue.Enqueue(packet);
+            // 받은 데이터를 receiveBuffer에 추가
+            _receiveBuffer.AddRange(receivedData);
+            Debug.Log($"[HandleWebSocketMessage] receiveBuffer에 추가. 현재 버퍼 크기: {_receiveBuffer.Count} 바이트");
+
+            // 완전한 패킷 추출
+            while (_receiveBuffer.Count >= 4) // 최소 헤더 크기 (2바이트 길이 + 2바이트 ID)
+            {
+                // 패킷 길이 읽기 (첫 2바이트, little-endian)
+                // Editor 버전과 동일하게 BitConverter 사용 (더 안정적)
+                byte[] lengthBytes = new byte[2];
+                lengthBytes[0] = _receiveBuffer[0];
+                lengthBytes[1] = _receiveBuffer[1];
+                if (!BitConverter.IsLittleEndian)
+                {
+                    Array.Reverse(lengthBytes);
+                }
+                ushort packetLength = BitConverter.ToUInt16(lengthBytes, 0);
+                
+                // [핵심 수정] 패킷 길이 유효성 검증 추가 - 버퍼 동기화 문제 방지
+                if (packetLength < 4 || packetLength > 4096) // 최소 4바이트, 최대 4KB
+                {
+                    Debug.LogError($"[HandleWebSocketMessage] ⚠️ 비정상적인 패킷 길이 감지: {packetLength} 바이트. 버퍼를 비우고 재동기화 시도.");
+                    _receiveBuffer.Clear();
+                    break;
+                }
+
+                // 패킷이 완전히 도착했는지 확인
+                if (_receiveBuffer.Count >= packetLength)
+                {
+                    // 완전한 패킷 추출
+                    byte[] completePacket = new byte[packetLength];
+                    _receiveBuffer.CopyTo(0, completePacket, 0, packetLength);
+                    _receiveBuffer.RemoveRange(0, packetLength);
+                    
+                    // 패킷 ID 확인 (디버깅용) - PacketReader와 동일한 방식으로 읽기
+                    if (packetLength >= 4)
+                    {
+                        // PacketReader.ReadHeader()와 동일한 방식: little-endian으로 읽기
+                        ushort messageID = BitConverter.ToUInt16(completePacket, 2);
+                        Debug.Log($"[HandleWebSocketMessage] 완전한 패킷 수신! ID: {messageID}, 길이: {packetLength} 바이트");
+                    }
+                    
+                    // 패킷 큐에 추가
+                    lock (_packetQueue)
+                    {
+                        const int MAX_QUEUE_SIZE = 100; // 최대 큐 크기
+                        if (_packetQueue.Count >= MAX_QUEUE_SIZE)
+                        {
+                            Debug.LogWarning($"[HandleWebSocketMessage] ⚠️ 패킷 큐가 가득 찼습니다! ({_packetQueue.Count}개) 오래된 패킷을 버립니다.");
+                            _packetQueue.Dequeue(); // 오래된 패킷 제거
+                        }
+                        _packetQueue.Enqueue(completePacket);
+                        if (_packetQueue.Count > 50)
+                        {
+                            Debug.LogWarning($"[HandleWebSocketMessage] ⚠️ 패킷 큐가 많이 쌓였습니다! ({_packetQueue.Count}개) 처리 지연 가능성.");
+                        }
+                        else
+                        {
+                            Debug.Log($"[HandleWebSocketMessage] 패킷 큐에 추가. 현재 큐 크기: {_packetQueue.Count}");
+                        }
+                    }
+                }
+                else
+                {
+                    // 패킷이 아직 완전히 도착하지 않음
+                    Debug.Log($"[HandleWebSocketMessage] 불완전한 패킷 대기 중... (필요: {packetLength} 바이트, 현재: {_receiveBuffer.Count} 바이트)");
+                    break;
+                }
+            }
         }
     }
     
@@ -140,15 +214,55 @@ public class NetworkManager : MonoBehaviour
             WebSocket_FreeString(_webSocketIdPtr);
             _webSocketIdPtr = IntPtr.Zero;
         }
+        
+        // [핵심 수정] 비정상 종료(1006)인 경우 자동 재연결 시도
+        // 1006: Abnormal Closure (브라우저 종료, 네트워크 오류 등)
+        if (code == 1006)
+        {
+            Debug.LogWarning("[Connect] 비정상 종료 감지 (코드: 1006). 3초 후 자동 재연결을 시도합니다...");
+            StartCoroutine(ReconnectAfterDelay(3f));
+        }
     }
+    
+    private System.Collections.IEnumerator ReconnectAfterDelay(float delay)
+    {
+        yield return new WaitForSeconds(delay);
+        
+        // 로비 씬에 있을 때만 재연결 시도
+        if (SceneManager.GetActiveScene().buildIndex == 1) // LobbyScene
+        {
+            Debug.Log("[Connect] 자동 재연결 시도 중...");
+            Connect();
+            
+            // 재연결 후 로그인 요청 전송
+            yield return new WaitForSeconds(1f);
+            if (IsConnected() && !string.IsNullOrEmpty(ConnectedUserName))
+            {
+                Debug.Log($"[Connect] 재연결 성공. 로그인 요청 전송: {ConnectedUserName}");
+                SendLoginRequest(ConnectedUserName);
+            }
+        }
+        else
+        {
+            Debug.Log("[Connect] 로비 씬이 아니므로 재연결을 건너뜁니다.");
+        }
+    }
+#elif UNITY_EDITOR
+    // Editor: C# WebSocket 클라이언트 사용 (Railway HTTP 서비스는 TCP 포트를 직접 노출하지 않음)
+    private ClientWebSocket _editorWebSocket;
+    private CancellationTokenSource _cancellationTokenSource;
+    private Task _receiveTask;
 #else
-    // Editor: TCP 소켓 사용
+    // 기타 플랫폼: TCP 소켓 사용
     private TcpClient _client;
     private NetworkStream _stream;
 #endif
 
+#if !UNITY_WEBGL && !UNITY_EDITOR
+    // TCP 소켓용 (Editor는 WebSocket 사용)
     private Thread _receiveThread;
     private bool _isRunning = true;
+#endif
 
     internal Queue<byte[]> _packetQueue = new Queue<byte[]>();
     private List<byte> _receiveBuffer = new List<byte>(); // 누적 버퍼 (불완전한 패킷 보관)
@@ -158,7 +272,12 @@ public class NetworkManager : MonoBehaviour
     public int CreatedRoomID { get; private set; } = -1; // 생성한 방 ID (방장 추적용)
     public int PendingRoomID { get; private set; } = -1; // 씬 전환 중인 방 ID (RoomManager 설정용)
     public string PendingRoomName { get; private set; } = null; // 씬 전환 중인 방 이름 (RoomManager 설정용)
+    
+    // [핵심 수정] 방 목록 요청 후 응답 대기 상태 추적
+    private float _lastRoomListRequestTime = 0f;
+    private bool _waitingForRoomListResponse = false;
     private int _currentTurnPlayerID = -1; // 현재 턴 플레이어 ID
+    private int _previousTurnPlayerID = -1; // 이전 턴 플레이어 ID (유령 플레이어 대체 처리용)
     public List<PlayerInfo> _gamePlayerList = new List<PlayerInfo>(); // 게임 시작 시 플레이어 목록
     private int _firstUserEnterID = -1; // 첫 번째 UserEnter Notify에서 받은 UserID (임시 식별용)
     private bool _hasReceivedUserEnter = false; // UserEnter Notify를 받았는지 여부
@@ -212,12 +331,31 @@ public class NetworkManager : MonoBehaviour
         
         // 각 클라이언트마다 고유한 userName 생성 (타임스탬프 + 랜덤 + 프로세스 ID)
         // 더 고유성을 보장하기 위해 System.Diagnostics.Process.GetCurrentProcess().Id 추가
+        // 서버가 기대하는 20바이트 제한을 준수해야 함
         long ticks = System.DateTime.Now.Ticks;
         int random = UnityEngine.Random.Range(1000, 9999);
         int processId = System.Diagnostics.Process.GetCurrentProcess().Id;
-        _myUniqueUserName = $"Client_{ticks}_{random}_{processId}";
+        string baseUserName = $"C_{ticks % 1000000000}_{random}_{processId % 1000}";
+        
+        // UTF-8 인코딩으로 20바이트 제한 확인
+        byte[] nameBytes = System.Text.Encoding.UTF8.GetBytes(baseUserName);
+        if (nameBytes.Length > 20)
+        {
+            // 20바이트를 초과하면 잘라냄
+            string truncated = baseUserName;
+            while (System.Text.Encoding.UTF8.GetByteCount(truncated) > 20)
+            {
+                truncated = truncated.Substring(0, truncated.Length - 1);
+            }
+            _myUniqueUserName = truncated;
+        }
+        else
+        {
+            _myUniqueUserName = baseUserName;
+        }
+        
         ConnectedUserName = _myUniqueUserName;
-        Debug.Log($"[NetworkManager] 고유 UserName 생성: {_myUniqueUserName}");
+        Debug.Log($"[NetworkManager] 고유 UserName 생성: {_myUniqueUserName} (길이: {System.Text.Encoding.UTF8.GetByteCount(_myUniqueUserName)}바이트)");
         
         Connect();
 
@@ -395,6 +533,8 @@ public class NetworkManager : MonoBehaviour
 
         string ip = serverIP;
         int port = serverPort;
+        
+        Debug.Log($"[Connect] 실제 사용할 서버 설정: IP={ip}, Port={port}");
 
         if (IS_DUMMY_MODE)
         {
@@ -415,8 +555,8 @@ public class NetworkManager : MonoBehaviour
             // HTTPS 페이지에서는 wss://를 사용해야 함 (Mixed Content 정책)
             // GitHub Pages는 HTTPS이므로 항상 wss:// 사용
             string protocol = "wss://";
-            string wsUrl = $"{protocol}{ip}:{port}";
-            Debug.Log($"[Connect] WebSocket 연결 시도 시작: {wsUrl}");
+            string wsUrl = port > 0 ? $"{protocol}{ip}:{port}" : $"{protocol}{ip}";
+            Debug.Log($"[Connect] WebSocket 연결 시도 시작 (WebGL): {wsUrl}");
             try
             {
                 
@@ -456,20 +596,148 @@ public class NetworkManager : MonoBehaviour
                     _webSocketIdPtr = IntPtr.Zero;
                 }
             }
+#elif UNITY_EDITOR
+            // Editor: C# WebSocket 클라이언트 사용 (Railway HTTP 서비스는 TCP 포트를 직접 노출하지 않음)
+            // [로컬 서버 지원] localhost나 127.0.0.1일 때는 ws:// 사용, 그 외에는 wss:// 사용
+            // 로컬서버 테스트 시 server-config.json 에서 포트 7778 사용.
+            string protocol = (ip == "localhost" || ip == "127.0.0.1") ? "ws://" : "wss://";
+            string wsUrl = port > 0 ? $"{protocol}{ip}:{port}" : $"{protocol}{ip}";
+            Debug.Log($"[Connect] WebSocket 연결 시도 시작 (Editor): {wsUrl}");
+            
+            try
+            {
+                _editorWebSocket = new ClientWebSocket();
+                _cancellationTokenSource = new CancellationTokenSource();
+                
+                // WebSocket 옵션 설정
+                // 서브프로토콜이나 추가 헤더가 필요하면 여기에 설정
+                // _editorWebSocket.Options.AddSubProtocol("binary");
+                
+                Debug.Log($"[Connect] WebSocket 연결 시도: {wsUrl}");
+                Debug.Log($"[Connect] WebSocket 초기 상태: {_editorWebSocket.State}");
+                Debug.Log($"[Connect] WebSocket 옵션 - KeepAliveInterval: {_editorWebSocket.Options.KeepAliveInterval}");
+                
+                // WebSocket 연결 (타임아웃 30초)
+                var connectTask = _editorWebSocket.ConnectAsync(new Uri(wsUrl), _cancellationTokenSource.Token);
+                
+                try
+                {
+                    bool completed = connectTask.Wait(TimeSpan.FromSeconds(30));
+                    
+                    // 타임아웃 후에도 실제 예외가 있는지 확인
+                    if (!completed)
+                    {
+                        _cancellationTokenSource.Cancel();
+                        
+                        // 타임아웃 전에 예외가 발생했을 수 있음
+                        if (connectTask.IsFaulted && connectTask.Exception != null)
+                        {
+                            Exception innerEx = connectTask.Exception.GetBaseException();
+                            Debug.LogError($"[Connect] WebSocket 연결 실패 (타임아웃 전 예외 발생). 예외: {innerEx.GetType().Name}: {innerEx.Message}");
+                            Debug.LogError($"[Connect] 전체 예외: {connectTask.Exception}");
+                            throw innerEx;
+                        }
+                        
+                        Debug.LogError($"[Connect] WebSocket 연결 타임아웃 (30초). 상태: {_editorWebSocket.State}");
+                        Debug.LogError($"[Connect] Task 상태 - IsCompleted: {connectTask.IsCompleted}, IsFaulted: {connectTask.IsFaulted}, IsCanceled: {connectTask.IsCanceled}");
+                        throw new Exception("WebSocket 연결 타임아웃 (30초)");
+                    }
+                    
+                    if (connectTask.IsFaulted)
+                    {
+                        Exception innerEx = connectTask.Exception?.GetBaseException() ?? connectTask.Exception?.InnerException;
+                        Debug.LogError($"[Connect] WebSocket 연결 실패 (Faulted). 예외: {innerEx?.GetType().Name}: {innerEx?.Message}");
+                        if (connectTask.Exception != null)
+                        {
+                            Debug.LogError($"[Connect] 전체 예외: {connectTask.Exception}");
+                            foreach (var ex in connectTask.Exception.InnerExceptions)
+                            {
+                                Debug.LogError($"[Connect] 내부 예외: {ex.GetType().Name}: {ex.Message}");
+                            }
+                        }
+                        throw innerEx ?? new Exception("WebSocket 연결 실패");
+                    }
+                    
+                    if (connectTask.IsCanceled)
+                    {
+                        Debug.LogError($"[Connect] WebSocket 연결 취소됨. 상태: {_editorWebSocket.State}");
+                        throw new Exception("WebSocket 연결 취소됨");
+                    }
+                    
+                    if (_editorWebSocket.State != WebSocketState.Open)
+                    {
+                        Debug.LogError($"[Connect] WebSocket 연결 실패. 상태: {_editorWebSocket.State}");
+                        Debug.LogError($"[Connect] Task 상태 - IsCompleted: {connectTask.IsCompleted}, IsFaulted: {connectTask.IsFaulted}, IsCanceled: {connectTask.IsCanceled}");
+                        throw new Exception($"WebSocket 연결 실패. 상태: {_editorWebSocket.State}");
+                    }
+                }
+                catch (AggregateException aggEx)
+                {
+                    Exception innerEx = aggEx.GetBaseException();
+                    Debug.LogError($"[Connect] WebSocket 연결 중 AggregateException 발생: {innerEx.GetType().Name}: {innerEx.Message}");
+                    Debug.LogError($"[Connect] 스택 트레이스: {innerEx.StackTrace}");
+                    
+                    // WebSocketException의 경우 추가 정보 수집
+                    if (innerEx is System.Net.WebSockets.WebSocketException wsEx)
+                    {
+                        Debug.LogError($"[Connect] WebSocketException - ErrorCode: {wsEx.WebSocketErrorCode}, NativeErrorCode: {wsEx.ErrorCode}");
+                    }
+                    
+                    // 내부 예외들 모두 로깅
+                    if (aggEx.InnerExceptions != null)
+                    {
+                        foreach (var ex in aggEx.InnerExceptions)
+                        {
+                            Debug.LogError($"[Connect] 내부 예외: {ex.GetType().Name}: {ex.Message}");
+                            if (ex is System.Net.WebSockets.WebSocketException wsEx2)
+                            {
+                                Debug.LogError($"[Connect]   - WebSocketErrorCode: {wsEx2.WebSocketErrorCode}, NativeErrorCode: {wsEx2.ErrorCode}");
+                            }
+                        }
+                    }
+                    
+                    throw innerEx;
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"[Connect] WebSocket 연결 중 예외 발생: {ex.GetType().Name}: {ex.Message}");
+                    Debug.LogError($"[Connect] 스택 트레이스: {ex.StackTrace}");
+                    throw;
+                }
+                
+                Debug.Log($"[Connect] ✅ WebSocket 연결 성공 (Editor): {wsUrl}");
+                
+                // 수신 태스크 시작
+                _receiveTask = Task.Run(async () => await EditorWebSocketReceiveLoop());
+                
+                // 로그인 요청 전송
+                string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
+                SendLoginRequest(loginUserName);
+                Debug.Log("[Connect] ✅✅✅ 로그인 요청(ID 100) 전송 완료!");
+            }
+            catch (Exception ex)
+            {
+                Debug.LogError($"[Connect] ❌ WebSocket 연결 실패 (Editor): {ex.Message}");
+                Debug.LogError($"[Connect] 스택 트레이스: {ex.StackTrace}");
+                
+                if (_editorWebSocket != null)
+                {
+                    try { _editorWebSocket.Dispose(); } catch { }
+                }
+                _editorWebSocket = null;
+                _cancellationTokenSource?.Cancel();
+                _cancellationTokenSource?.Dispose();
+                _cancellationTokenSource = null;
+            }
 #else
-            // Editor: 기존 TCP 소켓 사용
-            //  CASE 2: REAL SERVER MODE (실제 서버 연결 및 요청)
+            // 기타 플랫폼: TCP 소켓 사용
             Debug.Log($"[Connect] 서버 연결 시도 시작: {ip}:{port}");
             try
             {
-                // 연결 타임아웃 설정 (5초)
                 _client = new TcpClient();
                 _client.ReceiveTimeout = 5000;
                 _client.SendTimeout = 5000;
                 
-                Debug.Log($"[Connect] TcpClient 생성 완료. 연결 시도 중...");
-                
-                // 비동기 연결 시도 (타임아웃 5초)
                 IAsyncResult result = _client.BeginConnect(ip, port, null, null);
                 bool success = result.AsyncWaitHandle.WaitOne(TimeSpan.FromSeconds(5));
                 
@@ -483,46 +751,18 @@ public class NetworkManager : MonoBehaviour
                 _stream = _client.GetStream();
                 
                 Debug.Log($"[Connect] ✅ 서버 연결 성공: {ip}:{port}");
-                Debug.Log($"[Connect] 연결 상태 확인: Connected={_client.Connected}");
-                Debug.Log($"[Connect] LocalEndPoint: {(_client.Client.LocalEndPoint?.ToString() ?? "null")}");
-                Debug.Log($"[Connect] RemoteEndPoint: {(_client.Client.RemoteEndPoint?.ToString() ?? "null")}");
-
-                // 1. 수신 스레드 시작: 서버 응답(ID 101)을 받기 위해 필요합니다.
+                
                 _isRunning = true;
                 _receiveThread = new Thread(ReceiveLoop);
-                _receiveThread.IsBackground = true; // 백그라운드 스레드로 설정
+                _receiveThread.IsBackground = true;
                 _receiveThread.Start();
-                Debug.Log("[Connect] 수신 스레드 시작 완료.");
-
-                // 2. 로그인 요청(ID 100) 전송
-                // _myUniqueUserName이 Start()에서 설정되어 있음
-                string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
-                Debug.Log($"[Connect] 로그인 요청 전송 시작: UserName={loginUserName}");
-                Debug.Log($"[Connect] ⚠️⚠️⚠️ 서버로 ID 100 (로그인 요청) 패킷 전송 예정...");
-                SendLoginRequest(loginUserName);
-                Debug.Log("[Connect] ✅✅✅ 로그인 요청(ID 100) 전송 완료!");
-                Debug.Log("[Connect] ⚠️⚠️⚠️ 서버로부터 ID 101 (로그인 응답) 패킷 수신 대기 중...");
-            }
-            catch (SocketException ex)
-            {
-                // 연결 실패 시 TitleScene에 머무르거나, 재접속 UI를 띄우는 것이 정상입니다.
-                Debug.LogError($"[Connect] ❌ 서버 연결 실패 (SocketException): {ex.Message}");
-                Debug.LogError($"[Connect] SocketError: {ex.SocketErrorCode}");
-                Debug.LogError($"[Connect] 연결 시도한 주소: {ip}:{port}");
-                Debug.LogError("[Connect] 서버가 실행 중인지 확인하세요.");
                 
-                if (_client != null)
-                {
-                    try { _client.Close(); } catch { }
-                }
-                _client = null;
-                _stream = null;
+                string loginUserName = !string.IsNullOrEmpty(_myUniqueUserName) ? _myUniqueUserName : $"Client_{System.DateTime.Now.Ticks % 100000}";
+                SendLoginRequest(loginUserName);
             }
             catch (Exception ex)
             {
-                Debug.LogError($"[Connect] ❌ 서버 연결 실패 (Exception): {ex.GetType().Name}: {ex.Message}");
-                Debug.LogError($"[Connect] 스택 트레이스: {ex.StackTrace}");
-                
+                Debug.LogError($"[Connect] ❌ 서버 연결 실패: {ex.Message}");
                 if (_client != null)
                 {
                     try { _client.Close(); } catch { }
@@ -589,11 +829,26 @@ public class NetworkManager : MonoBehaviour
                 ServerConfig config = JsonUtility.FromJson<ServerConfig>(configFile.text);
                 if (config != null && !string.IsNullOrEmpty(config.serverIP))
                 {
-                    serverIP = config.serverIP;
-                    // Editor에서는 Railway TCP 포트(36222) 사용 (내부 포트 7777로 매핑됨)
-                    // Railway 포트 매핑: switchback.proxy.rlwy.net:36222 -> :7777
-                    serverPort = config.serverPort; // 설정 파일의 포트 사용 (36222)
-                    Debug.Log($"[NetworkManager] ✅ 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort} (TCP, Railway 매핑: 내부 7777)");
+                    Debug.Log($"[NetworkManager] 설정 파일 로드 전 - Inspector 값: IP={serverIP}, Port={serverPort}");
+                    
+                    // Inspector에 프로토콜이 포함되어 있으면 제거
+                    string cleanIP = config.serverIP;
+                    if (cleanIP.StartsWith("ws://") || cleanIP.StartsWith("wss://"))
+                    {
+                        Debug.LogWarning($"[NetworkManager] ⚠️ 설정 파일의 serverIP에 프로토콜이 포함되어 있습니다. 제거합니다: {cleanIP}");
+                        cleanIP = cleanIP.Replace("ws://", "").Replace("wss://", "");
+                    }
+                    
+                    // 설정 파일의 값으로 업데이트
+                    serverIP = cleanIP;
+                    serverPort = config.serverPort;
+                    
+                    if (serverPort == 0)
+                    {
+                        Debug.Log("[NetworkManager] 설정 파일의 포트가 0입니다. WebSocket URL에 포트를 포함하지 않습니다.");
+                    }
+                    Debug.Log($"[NetworkManager] ✅ 설정 파일에서 서버 설정 로드 (Editor): {serverIP}:{serverPort} (WebSocket)");
+                    Debug.Log($"[NetworkManager] 업데이트 후 - 실제 사용 값: IP={serverIP}, Port={serverPort}");
                     return;
                 }
                 else
@@ -607,12 +862,8 @@ public class NetworkManager : MonoBehaviour
             Debug.LogError($"[NetworkManager] 설정 파일에서 서버 설정 로드 실패 (Editor): {e.Message}\n{e.StackTrace}");
         }
         
-        // 설정 파일이 없으면 Inspector 기본값 사용 (Editor에서는 TCP 포트 사용)
-        if (serverPort != 7777)
-        {
-            serverPort = 7777;
-        }
-        Debug.Log($"[NetworkManager] ⚠️ Inspector 기본값 사용 (Editor): {serverIP}:{serverPort} (TCP)");
+        // 설정 파일이 없으면 Inspector 기본값 사용 (WebSocket, 포트 0)
+        Debug.Log($"[NetworkManager] ⚠️ Inspector 기본값 사용 (Editor): {serverIP}:{serverPort} (WebSocket)");
     }
     
     /// <summary>
@@ -644,8 +895,27 @@ public class NetworkManager : MonoBehaviour
             _webSocketIdPtr = IntPtr.Zero;
             _webSocketId = null;
         }
+#elif UNITY_EDITOR
+        // Editor: C# WebSocket 연결 종료
+        if (_editorWebSocket != null)
+        {
+            try
+            {
+                if (_editorWebSocket.State == WebSocketState.Open)
+                {
+                    _editorWebSocket.CloseAsync(WebSocketCloseStatus.NormalClosure, "Closing", CancellationToken.None).Wait(TimeSpan.FromSeconds(2));
+                }
+                _editorWebSocket.Dispose();
+            }
+            catch { }
+            _editorWebSocket = null;
+        }
+        _cancellationTokenSource?.Cancel();
+        _cancellationTokenSource?.Dispose();
+        _cancellationTokenSource = null;
+        _receiveTask = null;
 #else
-        // Editor: 기존 TCP 연결 종료
+        // 기타 플랫폼: TCP 연결 종료
         _isRunning = false;
         
         if (_receiveThread != null && _receiveThread.IsAlive)
@@ -669,8 +939,9 @@ public class NetworkManager : MonoBehaviour
 
     private void ReceiveLoop()
     {
-#if !UNITY_WEBGL || UNITY_EDITOR
-        Debug.Log("[ReceiveLoop] 수신 루프 시작.");
+#if !UNITY_WEBGL && !UNITY_EDITOR
+        // TCP 소켓용 수신 루프 (Editor는 WebSocket 사용)
+        Debug.Log("[ReceiveLoop] TCP 수신 루프 시작.");
         const int MAX_BUFFER_SIZE = 4096;
         byte[] receiveBuffer = new byte[MAX_BUFFER_SIZE];
         int bytesRead = 0;
@@ -686,12 +957,17 @@ public class NetworkManager : MonoBehaviour
                 {
                     bool isConnected = _client != null && _client.Connected;
                     bool streamAvailable = _stream != null && _stream.CanRead;
-                    Debug.Log($"[ReceiveLoop] 연결 상태 확인 - Connected: {isConnected}, StreamAvailable: {streamAvailable}, QueueSize: {_packetQueue.Count}");
+                    bool dataAvailable = _stream != null && _stream.DataAvailable;
+                    lock (_receiveBuffer)
+                    {
+                        Debug.Log($"[ReceiveLoop] 연결 상태 확인 - Connected: {isConnected}, StreamAvailable: {streamAvailable}, DataAvailable: {dataAvailable}, ReceiveBufferSize: {_receiveBuffer.Count}, QueueSize: {_packetQueue.Count}");
+                    }
                 }
 
                 if (_stream.DataAvailable)
                 {
                     bytesRead = _stream.Read(receiveBuffer, 0, receiveBuffer.Length);
+                    Debug.Log($"[ReceiveLoop] 데이터 수신: {bytesRead}바이트");
                     if (bytesRead > 0)
                     {
                         // 누적 버퍼에 추가
@@ -792,12 +1068,84 @@ public class NetworkManager : MonoBehaviour
                 break;
             }
         }
-        Debug.Log("[ReceiveLoop] 수신 루프 종료.");
+        Debug.Log("[ReceiveLoop] TCP 수신 루프 종료.");
+#elif UNITY_EDITOR
+        // Editor: WebSocket 수신 루프는 EditorWebSocketReceiveLoop에서 처리
+        Debug.Log("[ReceiveLoop] Editor에서는 EditorWebSocketReceiveLoop를 사용합니다.");
 #else
         // WebGL에서는 ReceiveLoop를 사용하지 않음 (WebSocket 콜백 사용)
         Debug.Log("[ReceiveLoop] WebGL 빌드에서는 ReceiveLoop를 사용하지 않습니다.");
 #endif
     }
+    
+#if UNITY_EDITOR
+    /// <summary>
+    /// Editor용 WebSocket 수신 루프
+    /// </summary>
+    private async Task EditorWebSocketReceiveLoop()
+    {
+        byte[] buffer = new byte[4096];
+        List<byte> receiveBuffer = new List<byte>(); // 누적 버퍼
+        
+        try
+        {
+            while (_editorWebSocket != null && _editorWebSocket.State == WebSocketState.Open)
+            {
+                var result = await _editorWebSocket.ReceiveAsync(new ArraySegment<byte>(buffer), _cancellationTokenSource.Token);
+                
+                if (result.MessageType == WebSocketMessageType.Close)
+                {
+                    Debug.Log("[EditorWebSocketReceiveLoop] WebSocket이 닫혔습니다.");
+                    break;
+                }
+                
+                if (result.MessageType == WebSocketMessageType.Binary)
+                {
+                    Debug.Log($"[EditorWebSocketReceiveLoop] 데이터 수신: {result.Count}바이트");
+                    
+                    // 누적 버퍼에 추가
+                    for (int i = 0; i < result.Count; i++)
+                    {
+                        receiveBuffer.Add(buffer[i]);
+                    }
+                    
+                    // 완전한 패킷 추출
+                    while (receiveBuffer.Count >= 4) // 최소 헤더 크기
+                    {
+                        ushort packetLength = BitConverter.ToUInt16(receiveBuffer.ToArray(), 0);
+                        
+                        if (receiveBuffer.Count >= packetLength)
+                        {
+                            byte[] completePacket = new byte[packetLength];
+                            receiveBuffer.CopyTo(0, completePacket, 0, packetLength);
+                            receiveBuffer.RemoveRange(0, packetLength);
+                            
+                            // 패킷 큐에 추가
+                            lock (_packetQueue)
+                            {
+                                _packetQueue.Enqueue(completePacket);
+                            }
+                            
+                            Debug.Log($"[EditorWebSocketReceiveLoop] 완전한 패킷 수신 (길이: {packetLength}바이트). 큐에 추가됨. 현재 큐 크기: {_packetQueue.Count}");
+                        }
+                        else
+                        {
+                            break; // 패킷이 아직 완전히 도착하지 않음
+                        }
+                    }
+                }
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            Debug.Log("[EditorWebSocketReceiveLoop] 수신 루프가 취소되었습니다.");
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"[EditorWebSocketReceiveLoop] 수신 중 오류 발생: {e.Message}");
+        }
+    }
+#endif
 
     void OnDestroy()
     {
@@ -854,8 +1202,32 @@ public class NetworkManager : MonoBehaviour
         {
             Debug.LogError($"패킷 전송 중 오류 발생: {e.Message}");
         }
+#elif UNITY_EDITOR
+        // Editor: C# WebSocket 전송
+        if (_editorWebSocket == null || _editorWebSocket.State != WebSocketState.Open)
+        {
+            Debug.LogError("WebSocket에 연결되지 않아 패킷을 보낼 수 없습니다.");
+            return;
+        }
+        try
+        {
+            var sendTask = _editorWebSocket.SendAsync(new ArraySegment<byte>(packet), WebSocketMessageType.Binary, true, _cancellationTokenSource.Token);
+            sendTask.Wait(TimeSpan.FromSeconds(5));
+            if (sendTask.IsCompletedSuccessfully)
+            {
+                Debug.Log($"패킷 전송 완료. 길이: {packet.Length} 바이트");
+            }
+            else
+            {
+                Debug.LogError("WebSocket 패킷 전송 실패");
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.LogError($"패킷 전송 중 오류 발생: {e.Message}");
+        }
 #else
-        // Editor: 기존 TCP 전송
+        // 기타 플랫폼: TCP 전송
         if (_stream == null || _client == null || !_client.Connected)
         {
             Debug.LogError("서버에 연결되지 않아 패킷을 보낼 수 없습니다.");
@@ -940,6 +1312,7 @@ public class NetworkManager : MonoBehaviour
                 ProcessGameStartNotify(reader);
                 break;
             case 430:
+                Debug.Log($"[Handle] ⚠️⚠️⚠️ Turn Start Notify 패킷 수신! ID: 430 (총 길이: {header.TotalLength}바이트) - ProcessTurnStartNotify 호출");
                 ProcessTurnStartNotify(reader);
                 break;
             case 400:
@@ -1022,6 +1395,13 @@ public class NetworkManager : MonoBehaviour
             // RoomManager가 아직 초기화되지 않았을 수 있으므로 씬 전환 후 처리
             PendingRoomID = roomID;
             
+            // [핵심 수정] 방장이 방을 생성할 때도 자신을 플레이어 목록에 추가하기 위한 코루틴 시작
+            // 방 생성 시에는 UserEnter Notify가 없으므로 명시적으로 추가해야 함
+            if (!string.IsNullOrEmpty(ConnectedUserName))
+            {
+                StartCoroutine(AddSelfToPlayerListAfterSceneLoad(roomID));
+            }
+            
             // 방 생성 성공 시 자동으로 방에 입장
             SendJoinRoomRequest(roomID);
             
@@ -1042,6 +1422,10 @@ public class NetworkManager : MonoBehaviour
         try
     {
         Debug.Log("ID 291 (RoomList Ans) 처리 시작.");
+        
+        // [핵심 수정] 방 목록 응답을 받았으므로 대기 상태 해제
+        _waitingForRoomListResponse = false;
+        
         List<RoomData> roomList = new List<RoomData>();
         int roomCount = reader.ReadInt32();
             Debug.Log($"[RoomList] 방 개수: {roomCount}");
@@ -1060,20 +1444,77 @@ public class NetworkManager : MonoBehaviour
 
             Debug.Log($"총 {roomCount}개의 방 목록 처리 완료. LobbyManager.Instance 체크 중...");
 
-        if (LobbyManager.Instance != null)
+        // [핵심 수정] RoomManager가 있고 현재 방에 속해있으면 방 이름 업데이트
+        if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID != -1)
         {
+            int currentRoomID = RoomManager.Instance.CurrentRoomID;
+            foreach (var room in roomList)
+            {
+                if (room.RoomID == currentRoomID)
+                {
+                    Debug.Log($"[RoomList] 현재 방({currentRoomID})의 이름을 업데이트: {room.RoomName}");
+                    RoomManager.Instance.UpdateRoomInfo(currentRoomID, room.RoomName, room.CurrentUserCount, 5);
+                    // PendingRoomName도 업데이트 (다음 씬 전환 시 사용)
+                    PendingRoomName = room.RoomName;
+                    break;
+                }
+            }
+        }
+
+        // [핵심 수정] 현재 씬을 확인하여 LobbyScene일 때만 LobbyManager 업데이트
+        string currentSceneName = UnityEngine.SceneManagement.SceneManager.GetActiveScene().name;
+        bool isLobbyScene = currentSceneName == "LobbyScene" || currentSceneName.Contains("Lobby");
+        
+        if (isLobbyScene)
+        {
+            if (LobbyManager.Instance != null)
+            {
                 Debug.Log($"[RoomList] LobbyManager.Instance 발견. 방 목록 업데이트 중...");
-            LobbyManager.Instance.UpdateRoomList(roomList);
+                LobbyManager.Instance.UpdateRoomList(roomList);
+            }
+            else
+            {
+                Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {currentSceneName}");
+                Debug.LogWarning("방 목록을 받았지만 LobbyManager가 아직 초기화되지 않았습니다. 대기 후 업데이트합니다.");
+                
+                // [핵심 수정] LobbyScene이고 LobbyManager가 아직 준비되지 않았으면 코루틴으로 대기 후 전달
+                StartCoroutine(WaitForLobbyManagerAndUpdateRoomList(roomList));
+            }
         }
         else
         {
-                Debug.LogWarning($"[RoomList] LobbyManager.Instance가 null입니다. 현재 씬: {UnityEngine.SceneManagement.SceneManager.GetActiveScene().name}");
-                Debug.LogWarning("방 목록을 받았지만 LobbyScene이 아니거나 LobbyManager가 아직 초기화되지 않았습니다.");
-            }
+            Debug.Log($"[RoomList] 현재 씬이 LobbyScene이 아닙니다 ({currentSceneName}). LobbyManager 업데이트를 건너뜁니다.");
+        }
         }
         catch (Exception ex)
         {
             Debug.LogError($"[RoomList] 방 목록 처리 중 오류 발생: {ex.Message}\n{ex.StackTrace}");
+            // 오류 발생 시에도 대기 상태 해제
+            _waitingForRoomListResponse = false;
+        }
+    }
+    
+    private IEnumerator WaitForLobbyManagerAndUpdateRoomList(List<RoomData> roomList)
+    {
+        Debug.Log("[WaitForLobbyManagerAndUpdateRoomList] LobbyManager가 준비될 때까지 대기 중...");
+        
+        // LobbyManager.Instance가 준비될 때까지 대기
+        float timeout = 5f;
+        float elapsed = 0f;
+        while (LobbyManager.Instance == null && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+
+        if (LobbyManager.Instance != null)
+        {
+            Debug.Log($"[WaitForLobbyManagerAndUpdateRoomList] LobbyManager 준비 완료. 방 목록 업데이트 중... (방 {roomList.Count}개)");
+            LobbyManager.Instance.UpdateRoomList(roomList);
+        }
+        else
+        {
+            Debug.LogError("[WaitForLobbyManagerAndUpdateRoomList] LobbyManager.Instance가 5초 내에 생성되지 않았습니다. 방 목록을 업데이트할 수 없습니다.");
         }
     }
 
@@ -1164,7 +1605,11 @@ public class NetworkManager : MonoBehaviour
         if (!IsConnected())
         {
             Debug.LogError("[SendRoomListRequest] 서버에 연결되지 않은 상태입니다. 방 목록을 요청할 수 없습니다.");
-#if !UNITY_WEBGL || UNITY_EDITOR
+#if UNITY_WEBGL && !UNITY_EDITOR
+            Debug.LogError("[SendRoomListRequest] WebGL: WebSocket 연결 상태 확인");
+#elif UNITY_EDITOR
+            Debug.LogError("[SendRoomListRequest] Editor: WebSocket 연결 상태=" + (_editorWebSocket != null ? _editorWebSocket.State.ToString() : "null"));
+#else
             Debug.LogError("[SendRoomListRequest] 연결 상태: _client=" + (_client != null ? "존재" : "null") + 
                           ", Connected=" + (_client != null ? _client.Connected.ToString() : "N/A"));
 #endif
@@ -1172,9 +1617,30 @@ public class NetworkManager : MonoBehaviour
             return;
         }
         
+        // [핵심 수정] 방 목록 요청 전송 및 응답 대기 상태 설정
+        _lastRoomListRequestTime = Time.time;
+        _waitingForRoomListResponse = true;
+        
         byte[] roomListPacket = MakeRoomListRequestPacket();
         SendPacket(roomListPacket);
         Debug.Log("ID 290 (RoomList Req) 패킷이 M3 서버로 전송되었습니다.");
+        
+        // [핵심 수정] 응답이 오지 않으면 재시도하는 코루틴 시작
+        StartCoroutine(CheckRoomListResponseTimeout());
+    }
+    
+    private System.Collections.IEnumerator CheckRoomListResponseTimeout()
+    {
+        // 3초 동안 응답 대기
+        yield return new WaitForSeconds(3f);
+        
+        // 응답을 받지 못했고 여전히 대기 중이면 재시도
+        if (_waitingForRoomListResponse && IsConnected())
+        {
+            Debug.LogWarning("[SendRoomListRequest] 방 목록 응답을 받지 못했습니다. 재시도합니다...");
+            _waitingForRoomListResponse = false; // 재시도 전 플래그 리셋
+            SendRoomListRequest(); // 재시도
+        }
     }
 
     private byte[] MakeRoomListRequestPacket()
@@ -1239,6 +1705,18 @@ public class NetworkManager : MonoBehaviour
                 // 씬 전환 전에 방 ID 저장 (씬 전환 후 RoomManager에 전달하기 위해)
                 PendingRoomID = roomID;
                 
+                // [핵심 수정] 모든 클라이언트(방장 포함)가 방에 입장할 때 자신을 플레이어 목록에 추가
+                // 서버는 입장한 플레이어에게 UserEnter Notify를 보내지 않으므로, 클라이언트가 직접 추가해야 함
+                if (!string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    StartCoroutine(AddSelfToPlayerListAfterSceneLoad(roomID));
+                }
+                
+                // [핵심 수정] 방 입장 직후 방 목록을 요청해서 방 이름과 플레이어 수를 가져오기
+                // 이렇게 하면 RoomManager.InitializeRoomInfo에서 방 정보를 제대로 표시할 수 있음
+                SendRoomListRequest();
+                Debug.Log($"[ProcessJoinRoomResponse] 방 입장 성공. 방 목록 요청 전송 (방 정보 가져오기 위해)");
+                
                 // UserEnter Notify 플래그 리셋 (새 방에 입장하므로)
                 _hasReceivedUserEnter = false;
                 _firstUserEnterID = -1;
@@ -1259,6 +1737,129 @@ public class NetworkManager : MonoBehaviour
 
     // ProcessRoomInfoResponse는 지침서에 없으므로 제거됨
     // 방 정보는 UserEnter Notify 등을 통해 업데이트됨
+
+    /// <summary>
+    /// 모든 클라이언트가 방에 입장한 후 자신을 플레이어 목록에 추가하는 코루틴
+    /// 서버는 입장한 플레이어에게 UserEnter Notify를 보내지 않으므로, 클라이언트가 직접 추가해야 함
+    /// </summary>
+    private System.Collections.IEnumerator AddSelfToPlayerListAfterSceneLoad(int roomID)
+    {
+        // RoomScene이 로드될 때까지 대기
+        yield return new WaitForSeconds(0.5f);
+        
+        // RoomManager가 준비될 때까지 대기
+        float timeout = 3f;
+        float elapsed = 0f;
+        while (RoomManager.Instance == null && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (RoomManager.Instance == null)
+        {
+            Debug.LogError("[AddSelfToPlayerListAfterSceneLoad] RoomManager.Instance가 3초 내에 생성되지 않았습니다.");
+            yield break;
+        }
+        
+        // ConnectedUserID와 ConnectedUserName이 설정될 때까지 대기
+        elapsed = 0f;
+        while ((ConnectedUserID == -1 || string.IsNullOrEmpty(ConnectedUserName)) && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (ConnectedUserID == -1 || string.IsNullOrEmpty(ConnectedUserName))
+        {
+            Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID({ConnectedUserID}) 또는 ConnectedUserName('{ConnectedUserName}')가 설정되지 않았습니다.");
+            // ConnectedUserName이 있으면 UserID 없이도 시도
+            if (string.IsNullOrEmpty(ConnectedUserName))
+            {
+                yield break;
+            }
+        }
+        
+        // 자신이 플레이어 목록에 있는지 확인
+        var playerList = RoomManager.Instance.GetPlayerList();
+        bool selfExists = false;
+        int myUserID = ConnectedUserID;
+        
+        if (myUserID != -1)
+        {
+            foreach (var player in playerList)
+            {
+                if (player.PlayerID == myUserID)
+                {
+                    selfExists = true;
+                    break;
+                }
+            }
+        }
+        
+        // UserID가 없으면 UserName으로 찾기
+        if (!selfExists && myUserID == -1 && !string.IsNullOrEmpty(ConnectedUserName))
+        {
+            foreach (var player in playerList)
+            {
+                if (player.PlayerName == ConnectedUserName)
+                {
+                    selfExists = true;
+                    myUserID = player.PlayerID; // UserID도 설정
+                    ConnectedUserID = myUserID; // NetworkManager에도 저장
+                    break;
+                }
+            }
+        }
+        
+        // 자신이 플레이어 목록에 없으면 추가
+        if (!selfExists && !string.IsNullOrEmpty(ConnectedUserName))
+        {
+            // UserID가 없으면 UserName으로 플레이어 목록에서 찾기 시도
+            if (myUserID == -1)
+            {
+                Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID가 설정되지 않았습니다. UserName으로 찾기 시도: UserName='{ConnectedUserName}'");
+                
+                // UserEnter Notify를 받을 때까지 대기 (최대 2초)
+                elapsed = 0f;
+                while (ConnectedUserID == -1 && elapsed < 2f)
+                {
+                    yield return new WaitForSeconds(0.1f);
+                    elapsed += 0.1f;
+                }
+                
+                if (ConnectedUserID != -1)
+                {
+                    myUserID = ConnectedUserID;
+                    Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] UserEnter Notify를 받아 ConnectedUserID 설정: {myUserID}");
+                }
+                else
+                {
+                    // [핵심 수정] UserID를 찾을 수 없어도, 서버가 UserEnter Notify를 보내지 않을 수 있으므로
+                    // 방에 있는 다른 플레이어의 UserEnter Notify를 받을 때까지 대기
+                    // 다른 플레이어가 입장하면 그때 자신도 추가될 수 있음
+                    Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] ConnectedUserID를 찾을 수 없습니다. 다른 플레이어의 UserEnter Notify를 기다립니다.");
+                    // 일단 건너뛰고, 다른 플레이어의 UserEnter Notify를 받을 때 처리됨
+                    // 또는 방 목록 응답에서 플레이어 수를 확인하여 자신을 추가할 수 있음
+                    yield break;
+                }
+            }
+            
+            if (myUserID != -1)
+            {
+                Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName='{ConnectedUserName}'");
+                RoomManager.Instance.OnUserEntered(myUserID, ConnectedUserName);
+            }
+        }
+        else if (selfExists)
+        {
+            Debug.Log($"[AddSelfToPlayerListAfterSceneLoad] 자신이 이미 플레이어 목록에 있습니다. UserID={myUserID}, UserName='{ConnectedUserName}'");
+        }
+        else
+        {
+            Debug.LogWarning($"[AddSelfToPlayerListAfterSceneLoad] 자신의 정보가 불완전합니다. UserID={myUserID}, UserName='{ConnectedUserName}'");
+        }
+    }
 
     private void ProcessReadyNotify(PacketReader reader)
     {
@@ -1302,6 +1903,8 @@ public class NetworkManager : MonoBehaviour
         
         int readyState = WebSocket_GetReadyState(_webSocketIdPtr);
         return readyState == 1; // OPEN
+#elif UNITY_EDITOR
+        return _editorWebSocket != null && _editorWebSocket.State == WebSocketState.Open;
 #else
         return _client != null && _client.Connected;
 #endif
@@ -1320,6 +1923,29 @@ public class NetworkManager : MonoBehaviour
             if (RoomManager.Instance != null)
             {
                 var playerList = RoomManager.Instance.GetPlayerList();
+                
+                // [핵심 수정] 마지막 접속 클라이언트가 자신의 UserEnter Notify를 받지 못했을 수 있으므로
+                // 자신이 플레이어 목록에 없으면 추가
+                if (ConnectedUserID != -1 && !string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    bool selfExists = false;
+                    foreach (var player in playerList)
+                    {
+                        if (player.PlayerID == ConnectedUserID)
+                        {
+                            selfExists = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!selfExists)
+                    {
+                        Debug.LogWarning($"[ProcessGameStartNotify] ⚠️ 자신이 플레이어 목록에 없습니다. 추가합니다. UserID: {ConnectedUserID}, UserName: {ConnectedUserName}");
+                        RoomManager.Instance.OnUserEntered(ConnectedUserID, ConnectedUserName);
+                        // 목록 다시 가져오기
+                        playerList = RoomManager.Instance.GetPlayerList();
+                    }
+                }
                 
                 // [핵심 수정] 모든 클라이언트에서 동일한 순서를 보장하기 위해 PlayerID로 정렬
                 // 이렇게 하면 모든 클라이언트에서 동일한 플레이어 순서, 색상, 위치를 보장할 수 있음
@@ -1660,6 +2286,28 @@ public class NetworkManager : MonoBehaviour
                 }
             }
 
+            // [핵심 수정] RoomManager가 null이거나 플레이어 목록이 비어있을 때 처리
+            else
+            {
+                Debug.LogError("[ProcessGameStartNotify] RoomManager.Instance가 null입니다!");
+                Debug.LogError("[ProcessGameStartNotify] 플레이어 목록을 가져올 수 없습니다. 게임을 시작할 수 없습니다.");
+                
+                // 폴백: ConnectedUserID가 있으면 자신만 생성
+                if (ConnectedUserID != -1 && !string.IsNullOrEmpty(ConnectedUserName))
+                {
+                    Debug.LogWarning("[ProcessGameStartNotify] 폴백: 자신만 플레이어 목록에 추가합니다.");
+                    _gamePlayerList.Clear();
+                    _gamePlayerList.Add(new PlayerInfo(ConnectedUserID, ConnectedUserName));
+                }
+            }
+            
+            // [핵심 수정] _gamePlayerList가 비어있으면 게임을 시작할 수 없음
+            if (_gamePlayerList == null || _gamePlayerList.Count == 0)
+            {
+                Debug.LogError("[ProcessGameStartNotify] ❌ 플레이어 목록이 비어있습니다. 게임을 시작할 수 없습니다.");
+                return;
+            }
+            
             // 첫 턴 플레이어 설정
             _currentTurnPlayerID = firstTurnUserID;
             Debug.Log($"[ProcessGameStartNotify] _currentTurnPlayerID 설정: {_currentTurnPlayerID}");
@@ -1785,9 +2433,11 @@ public class NetworkManager : MonoBehaviour
                 PlayerManager.Instance.UpdatePlayerLocalStatus();
             }
 
-            // RoomManager에 사용자 입장 알림 전달
+            // [핵심 수정] RoomManager에 모든 사용자 입장 알림 전달 (자신 포함, 모든 클라이언트에서 동일하게)
+            // 이렇게 하면 각 클라이언트에서 모든 플레이어를 볼 수 있음
             if (RoomManager.Instance != null)
             {
+                Debug.Log($"[UserEnter Notify] RoomManager에 사용자 입장 알림 전달: UserID={userID}, UserName='{userName}'");
                 RoomManager.Instance.OnUserEntered(userID, userName);
                 
                 // 방 정보가 없으면 기본값으로 설정
@@ -1800,26 +2450,46 @@ public class NetworkManager : MonoBehaviour
                 }
             }
             
-            // 방장이 방을 생성한 경우, 자신의 UserEnter Notify를 받지 못할 수 있으므로
-            // 방장 자신을 플레이어 목록에 추가
-            if (CreatedRoomID != -1 && isMyUser && RoomManager.Instance != null)
+            // [핵심 수정] 방장이 방을 생성한 경우, 자신의 UserEnter Notify를 받지 못할 수 있으므로
+            // 방장 자신을 플레이어 목록에 추가 (다른 클라이언트가 입장할 때도 방장을 볼 수 있도록)
+            if (CreatedRoomID != -1 && RoomManager.Instance != null)
             {
-                // 이미 추가되어 있는지 확인
+                // 방장 자신이 플레이어 목록에 있는지 확인
                 var playerList = RoomManager.Instance.GetPlayerList();
-                bool alreadyExists = false;
-                foreach (var player in playerList)
+                bool hostExists = false;
+                int hostUserID = ConnectedUserID != -1 ? ConnectedUserID : -1;
+                string hostUserName = ConnectedUserName;
+                
+                // ConnectedUserID가 설정되지 않았으면 ConnectedUserName으로 찾기
+                if (hostUserID == -1 && !string.IsNullOrEmpty(hostUserName))
                 {
-                    if (player.PlayerID == userID)
+                    foreach (var player in playerList)
                     {
-                        alreadyExists = true;
-                        break;
+                        if (player.PlayerName == hostUserName)
+                        {
+                            hostUserID = player.PlayerID;
+                            hostExists = true;
+                            break;
+                        }
+                    }
+                }
+                else if (hostUserID != -1)
+                {
+                    foreach (var player in playerList)
+                    {
+                        if (player.PlayerID == hostUserID)
+                        {
+                            hostExists = true;
+                            break;
+                        }
                     }
                 }
                 
-                if (!alreadyExists)
+                // 방장 자신이 플레이어 목록에 없으면 추가
+                if (!hostExists && hostUserID != -1 && !string.IsNullOrEmpty(hostUserName))
                 {
-                    Debug.Log($"[ProcessUserEnterNotify] 방장 자신을 플레이어 목록에 추가: UserID={userID}, UserName={userName}");
-                    RoomManager.Instance.OnUserEntered(userID, userName);
+                    Debug.Log($"[UserEnter Notify] 방장 자신을 플레이어 목록에 추가: UserID={hostUserID}, UserName='{hostUserName}'");
+                    RoomManager.Instance.OnUserEntered(hostUserID, hostUserName);
                 }
             }
         }
@@ -1838,8 +2508,39 @@ public class NetworkManager : MonoBehaviour
 
             if (success)
             {
-                Debug.Log("[LeaveRoom] 방 나가기 성공. LobbyScene으로 이동합니다.");
-                UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+                Debug.Log("[LeaveRoom] 방 나가기 성공.");
+                
+                // [핵심 수정] RoomManager의 CurrentRoomID 초기화 (방 나가기 성공 시)
+                if (RoomManager.Instance != null)
+                {
+                    // RoomManager에 방 ID 초기화 메서드가 없으므로, 직접 접근하여 초기화
+                    // RoomManager는 씬 전환 시 파괴되므로 여기서 초기화할 필요는 없지만,
+                    // 혹시 모를 상황을 대비하여 명시적으로 처리
+                    Debug.Log("[LeaveRoom] RoomManager의 방 정보 초기화 (씬 전환으로 자동 처리됨)");
+                }
+                
+                // CreatedRoomID와 PendingRoomID도 초기화 (다음 방 생성 시 문제가 없도록)
+                CreatedRoomID = -1;
+                PendingRoomID = -1;
+                
+                Debug.Log("[LeaveRoom] CreatedRoomID와 PendingRoomID 초기화 완료.");
+                
+                // [핵심 수정] 현재 씬이 로비 씬이 아니면 로비 씬으로 이동
+                // 이미 로비 씬에 있으면 씬 전환을 하지 않음 (중복 씬 전환 방지)
+                int currentSceneIndex = UnityEngine.SceneManagement.SceneManager.GetActiveScene().buildIndex;
+                if (currentSceneIndex != 1) // LobbyScene이 아니면
+                {
+                    Debug.Log("[LeaveRoom] 로비 씬으로 이동합니다.");
+                    UnityEngine.SceneManagement.SceneManager.LoadScene(1);
+                }
+                else
+                {
+                    Debug.Log("[LeaveRoom] 이미 로비 씬에 있습니다. 씬 전환을 건너뜁니다.");
+                    
+                    // [핵심 수정] 이미 로비 씬에 있으면 방 목록 요청을 다시 전송
+                    // 씬 전환이 없으면 OnSceneLoaded가 호출되지 않아서 방 목록 요청이 전송되지 않을 수 있음
+                    StartCoroutine(WaitForLobbyManagerAndRequestRoomList());
+                }
             }
             else
             {
@@ -1893,18 +2594,23 @@ public class NetworkManager : MonoBehaviour
             int turnTimeLimitSec = reader.ReadInt32();
 
             Debug.Log($"[Turn Start Notify] ✅✅✅✅✅ ID 430 수신! 턴 전환! NextPlayerID: {nextPlayerID}, TurnTimeLimitSec: {turnTimeLimitSec}, 내 UserID: {ConnectedUserID}");
-            Debug.Log($"[Turn Start Notify] 이전 턴 플레이어: {_currentTurnPlayerID}, 새로운 턴 플레이어: {nextPlayerID}");
 
-            // [핵심 수정] 중복 패킷 방지: 같은 nextPlayerID를 가진 패킷을 연속으로 받으면 무시
-            if (_currentTurnPlayerID == nextPlayerID && _currentTurnPlayerID != -1)
-            {
-                Debug.LogWarning($"[Turn Start Notify] ⚠️ 중복 패킷 감지! 이미 현재 턴 플레이어({_currentTurnPlayerID})인데 동일한 패킷을 다시 수신했습니다. 무시합니다.");
-                return;
-            }
-
+            // [핵심 수정] 중복 패킷 방지 로직 제거 - 서버가 보낸 모든 턴 전환 패킷을 처리
+            // 이전 로직은 같은 플레이어에게 턴이 다시 돌아올 때(예: 3명 플레이어에서 3턴 후) 패킷을 무시하는 버그가 있었음
+            // 서버가 보낸 모든 턴 전환 패킷은 유효하므로 항상 처리해야 함
+            
             // [핵심 수정] _currentTurnPlayerID를 먼저 업데이트하여, ApplyTurnControlToAllPlayers에서 
             // GetCurrentTurnPlayerID()를 호출할 때 올바른 값을 반환하도록 보장
+            _previousTurnPlayerID = _currentTurnPlayerID; // 이전 턴 플레이어 ID 저장 (유령 플레이어 대체 처리용)
             _currentTurnPlayerID = nextPlayerID;
+            
+            Debug.Log($"[Turn Start Notify] 이전 턴 플레이어: {_previousTurnPlayerID}, 새로운 턴 플레이어: {nextPlayerID}");
+            
+            // 이전 턴과 동일한 플레이어인 경우에만 경고 로그 (하지만 처리는 계속 진행)
+            if (_previousTurnPlayerID == nextPlayerID && _previousTurnPlayerID != -1)
+            {
+                Debug.LogWarning($"[Turn Start Notify] ⚠️ 이전 턴과 동일한 플레이어({nextPlayerID})입니다. 서버에서 중복 전송되었을 수 있지만 처리합니다.");
+            }
 
             // PlayerController에 턴 정보 전달
             // 플레이어가 아직 생성되지 않았을 수 있으므로, 생성된 경우에만 처리
@@ -1929,6 +2635,8 @@ public class NetworkManager : MonoBehaviour
                 else
                 {
                     Debug.LogWarning($"[Turn Start Notify] ⚠️ 플레이어가 아직 생성되지 않았습니다. GameManager.StartGameLogic() 완료 후 턴 정보가 적용됩니다.");
+                    // [핵심 수정] 플레이어가 생성되지 않았어도 _currentTurnPlayerID는 업데이트했으므로,
+                    // GameManager.StartGameLogic()에서 ApplyPendingTurnControl()이 호출될 때 올바른 턴 정보가 적용됨
                 }
             }
             else
@@ -1964,13 +2672,54 @@ public class NetworkManager : MonoBehaviour
         bool foundNextPlayer = allPlayers.ContainsKey(nextPlayerID);
         Debug.Log($"[ApplyTurnControlToAllPlayers] NextPlayerID {nextPlayerID}가 PlayerManager에 존재하는가? {foundNextPlayer}");
         
-        if (!foundNextPlayer)
+        // [핵심 수정] nextPlayerID가 PlayerManager에 없는 경우 (유령 플레이어 등), 
+        // 다음 유효한 플레이어를 찾아서 대체 사용
+        int actualNextPlayerID = nextPlayerID;
+        if (!foundNextPlayer && allPlayers.Count > 0)
         {
-            Debug.LogError($"[ApplyTurnControlToAllPlayers] ⚠️⚠️⚠️ NextPlayerID {nextPlayerID}가 PlayerManager에 없습니다! 현재 플레이어 목록:");
+            Debug.LogError($"[ApplyTurnControlToAllPlayers] ⚠️⚠️⚠️ NextPlayerID {nextPlayerID}가 PlayerManager에 없습니다! 다음 유효한 플레이어를 찾습니다. 현재 플레이어 목록:");
             foreach (var kvp in allPlayers)
             {
                 Debug.LogError($"[ApplyTurnControlToAllPlayers]   - PlayerID: {kvp.Key}, GameObject: {kvp.Value?.name ?? "null"}");
             }
+            
+            // 이전 턴 플레이어를 기준으로 다음 플레이어 찾기
+            // _previousTurnPlayerID는 ProcessTurnStartNotify에서 저장된 값 사용
+            int previousTurnPlayerID = _previousTurnPlayerID;
+            
+            if (previousTurnPlayerID != -1 && allPlayers.ContainsKey(previousTurnPlayerID))
+            {
+                // 이전 턴 플레이어가 있으면, 그 다음 플레이어를 찾기
+                var sortedPlayerIDs = new List<int>(allPlayers.Keys);
+                sortedPlayerIDs.Sort();
+                
+                int previousIndex = sortedPlayerIDs.IndexOf(previousTurnPlayerID);
+                if (previousIndex >= 0)
+                {
+                    // 다음 플레이어 인덱스 계산 (순환)
+                    int nextIndex = (previousIndex + 1) % sortedPlayerIDs.Count;
+                    actualNextPlayerID = sortedPlayerIDs[nextIndex];
+                    Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 플레이어({previousTurnPlayerID})의 다음 플레이어({actualNextPlayerID})로 턴 전환");
+                }
+                else
+                {
+                    // 이전 턴 플레이어를 찾지 못한 경우, 첫 번째 플레이어 사용
+                    actualNextPlayerID = sortedPlayerIDs[0];
+                    Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 플레이어를 찾지 못했습니다. 첫 번째 플레이어({actualNextPlayerID})로 턴 전환");
+                }
+            }
+            else
+            {
+                // 이전 턴 플레이어 정보가 없는 경우, 첫 번째 플레이어 사용
+                var sortedPlayerIDs = new List<int>(allPlayers.Keys);
+                sortedPlayerIDs.Sort();
+                actualNextPlayerID = sortedPlayerIDs[0];
+                Debug.LogWarning($"[ApplyTurnControlToAllPlayers] 🔄 이전 턴 정보가 없습니다. 첫 번째 플레이어({actualNextPlayerID})로 턴 전환");
+            }
+            
+            // _currentTurnPlayerID도 업데이트하여 일관성 유지
+            _currentTurnPlayerID = actualNextPlayerID;
+            Debug.LogWarning($"[ApplyTurnControlToAllPlayers] ✅ 대체 플레이어 ID: {actualNextPlayerID} (원래 서버에서 받은 ID: {nextPlayerID})");
         }
         
         // 모든 플레이어에게 턴 정보 업데이트
@@ -1984,14 +2733,14 @@ public class NetworkManager : MonoBehaviour
                 var controller = playerObj.GetComponent<PlayerController>();
                 if (controller != null)
                 {
-                    // nextPlayerID는 서버에서 보낸 UserID이므로, 이것이 ConnectedUserID와 일치해야 함
+                    // [핵심 수정] actualNextPlayerID 사용 (유령 플레이어 대체 처리 후)
                     // 로컬 플레이어이고, 현재 턴이 로컬 플레이어의 턴이면 컨트롤 가능
-                    // [핵심 수정] ConnectedUserID를 단일 소스로 사용하여 일관성 보장
+                    // ConnectedUserID를 단일 소스로 사용하여 일관성 보장
                     bool isLocalPlayer = (playerID == ConnectedUserID && ConnectedUserID != -1);
-                    bool isCurrentTurn = (playerID == nextPlayerID);
+                    bool isCurrentTurn = (playerID == actualNextPlayerID);
                     bool canControl = isLocalPlayer && isCurrentTurn;
                     
-                    Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, NextPlayerID: {nextPlayerID}, ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
+                    Debug.Log($"[ApplyTurnControlToAllPlayers] PlayerID: {playerID}, ActualNextPlayerID: {actualNextPlayerID} (서버에서 받은 ID: {nextPlayerID}), ConnectedUserID: {ConnectedUserID}, isLocalPlayer: {isLocalPlayer}, isCurrentTurn: {isCurrentTurn}, canControl: {canControl}");
                     
                     // [핵심 수정] 모든 플레이어에게 SetCanControl 호출
                     // 로컬 플레이어이고 현재 턴이면 true, 아니면 false
@@ -2278,12 +3027,100 @@ public class NetworkManager : MonoBehaviour
 
     public void SendCreateRoomRequest(string roomName)
     {
+        // [핵심 수정] 이미 방에 속해있는지 확인하고, 속해있다면 먼저 방을 나가야 함
+        // 게임 종료 후 로비로 돌아왔을 때 서버의 player_room_map에 여전히 남아있을 수 있음
+        // 로비 씬에서는 RoomManager.Instance가 null이므로, CreatedRoomID나 PendingRoomID를 확인
+        bool isInRoom = false;
+        int currentRoomID = -1;
+        
+        if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID != -1)
+        {
+            isInRoom = true;
+            currentRoomID = RoomManager.Instance.CurrentRoomID;
+        }
+        else if (CreatedRoomID != -1 || PendingRoomID != -1)
+        {
+            // RoomManager가 없어도 CreatedRoomID나 PendingRoomID가 있으면 방에 속해있을 수 있음
+            isInRoom = true;
+            currentRoomID = CreatedRoomID != -1 ? CreatedRoomID : PendingRoomID;
+            Debug.Log($"[SendCreateRoomRequest] RoomManager가 없지만 CreatedRoomID({CreatedRoomID}) 또는 PendingRoomID({PendingRoomID})가 있어서 방에 속해있을 수 있습니다.");
+        }
+        
+        if (isInRoom)
+        {
+            Debug.Log($"[SendCreateRoomRequest] 이미 방에 속해있습니다 (RoomID: {currentRoomID}). 먼저 방을 나갑니다.");
+            // 방을 나간 후 방 생성 요청을 보내도록 콜백 설정
+            StartCoroutine(LeaveRoomAndCreateNewRoom(roomName));
+            return;
+        }
+        
         // 방 이름 저장 (나중에 RoomManager에 전달하기 위해)
         PendingRoomName = roomName;
         
         byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
         SendPacket(createPacket);
         Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+    }
+    
+    private System.Collections.IEnumerator LeaveRoomAndCreateNewRoom(string roomName)
+    {
+        // 방 나가기 요청 전송
+        SendLeaveRoomRequest();
+        
+        // 방 나가기 응답을 기다림 (최대 3초)
+        float timeout = 3f;
+        float elapsed = 0f;
+        int initialCreatedRoomID = CreatedRoomID;
+        int initialPendingRoomID = PendingRoomID;
+        
+        // CreatedRoomID와 PendingRoomID가 모두 -1이 될 때까지 대기
+        while (elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+            
+            // RoomManager가 있으면 CurrentRoomID도 확인
+            if (RoomManager.Instance != null && RoomManager.Instance.CurrentRoomID == -1)
+            {
+                break;
+            }
+            
+            // RoomManager가 없거나 CurrentRoomID가 -1이 아니면 CreatedRoomID와 PendingRoomID 확인
+            if (RoomManager.Instance == null && CreatedRoomID == -1 && PendingRoomID == -1)
+            {
+                break;
+            }
+        }
+        
+        // 방을 나갔는지 확인
+        bool leftRoom = false;
+        if (RoomManager.Instance != null)
+        {
+            leftRoom = (RoomManager.Instance.CurrentRoomID == -1);
+        }
+        else
+        {
+            // RoomManager가 없으면 CreatedRoomID와 PendingRoomID가 모두 -1인지 확인
+            leftRoom = (CreatedRoomID == -1 && PendingRoomID == -1);
+        }
+        
+        if (leftRoom)
+        {
+            Debug.Log("[SendCreateRoomRequest] 방 나가기 완료. 새 방 생성 요청을 전송합니다.");
+            PendingRoomName = roomName;
+            byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
+            SendPacket(createPacket);
+            Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+        }
+        else
+        {
+            Debug.LogWarning($"[SendCreateRoomRequest] 방 나가기 타임아웃 (CreatedRoomID: {CreatedRoomID}, PendingRoomID: {PendingRoomID}). 그래도 방 생성 요청을 전송합니다.");
+            // 타임아웃이어도 방 생성 요청을 전송 (서버가 처리할 것)
+            PendingRoomName = roomName;
+            byte[] createPacket = MakeCreateRoomRequestPacket(roomName);
+            SendPacket(createPacket);
+            Debug.Log($"ID 300 (Create Room Req) 패킷이 M3 서버로 전송되었습니다. RoomName: {roomName}");
+        }
     }
 
 
@@ -2746,6 +3583,14 @@ public class NetworkManager : MonoBehaviour
             {
                 Debug.LogWarning("[Game End] GameUI.Instance가 null입니다.");
             }
+            
+            // [핵심 수정] 게임 종료 시 CreatedRoomID와 PendingRoomID만 초기화
+            // 자동 방 나가기는 제거 (사용자가 버튼을 클릭할 때만 방을 나가도록)
+            // 자동 방 나가기는 씬 전환 문제를 일으킬 수 있음
+            Debug.Log($"[Game End] 게임 종료 전 상태 - CreatedRoomID: {CreatedRoomID}, PendingRoomID: {PendingRoomID}");
+            CreatedRoomID = -1;
+            PendingRoomID = -1;
+            Debug.Log("[Game End] CreatedRoomID와 PendingRoomID 초기화 완료 (게임 종료 후 로비에서 새 방 생성 가능)");
         }
         catch (Exception ex)
         {

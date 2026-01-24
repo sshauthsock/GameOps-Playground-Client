@@ -18,6 +18,11 @@ public class LobbyUI : MonoBehaviour
 
     [Header("Refresh")]
     public Button RefreshButton;
+    
+    [Header("Auto Refresh")]
+    public float autoRefreshInterval = 5f; // 5초마다 자동 새로고침
+
+    private float _lastRefreshTime = 0f;
 
     private void Start()
     {
@@ -153,6 +158,26 @@ public class LobbyUI : MonoBehaviour
         foreach (Transform child in ContentParent)
         {
             Destroy(child.gameObject);
+        }
+    }
+    
+    private void Update()
+    {
+        // [핵심 수정] 주기적으로 방 목록 자동 새로고침 (유저가 나간 것을 반영)
+        // 단, 방 목록 응답을 기다리는 중이면 새로고침하지 않음 (중복 요청 방지)
+        if (Time.time - _lastRefreshTime >= autoRefreshInterval)
+        {
+            _lastRefreshTime = Time.time;
+            
+            // 서버에 연결되어 있고, 로비 씬에 있을 때만 새로고침
+            if (NetworkManager.Instance != null && NetworkManager.Instance.IsConnected())
+            {
+                // [핵심 수정] 방 목록 응답을 기다리는 중이 아니면 새로고침
+                // NetworkManager에 _waitingForRoomListResponse가 private이므로,
+                // 여기서는 항상 새로고침하되, NetworkManager에서 중복 요청을 방지하도록 함
+                Debug.Log("[LobbyUI] 자동 방 목록 새로고침");
+                NetworkManager.Instance.SendRoomListRequest();
+            }
         }
     }
 }

@@ -92,44 +92,117 @@ public class RoomManager : MonoBehaviour
             if (string.IsNullOrEmpty(_currentRoomName))
             {
                 string pendingRoomName = NetworkManager.Instance.PendingRoomName;
-                _currentRoomName = !string.IsNullOrEmpty(pendingRoomName) ? pendingRoomName : $"Room #{pendingRoomID}";
-            }
-            
-            // UI 업데이트
-            if (roomUI != null)
-            {
-                roomUI.UpdateRoomInfo(pendingRoomID, _currentRoomName, _currentPlayerCount, _maxPlayers);
-            }
-            
-            // 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
-            if (_isHost && NetworkManager.Instance.ConnectedUserName != null)
-            {
-                int myUserID = NetworkManager.Instance.ConnectedUserID;
-                if (myUserID != -1)
+                if (!string.IsNullOrEmpty(pendingRoomName))
                 {
-                    // 이미 추가되어 있는지 확인
-                    bool exists = false;
-                    foreach (var player in _playerList)
+                    _currentRoomName = pendingRoomName;
+                    Debug.Log($"[RoomManager] PendingRoomName에서 방 이름 가져옴: {_currentRoomName}");
+                }
+                else
+                {
+                    _currentRoomName = $"Room #{pendingRoomID}";
+                    Debug.LogWarning($"[RoomManager] PendingRoomName이 비어있어서 기본값 사용: {_currentRoomName}");
+                    // 방 목록을 요청해서 실제 방 이름을 가져오기
+                    if (NetworkManager.Instance != null)
                     {
-                        if (player.PlayerID == myUserID)
-                        {
-                            exists = true;
-                            break;
-                        }
-                    }
-                    
-                    if (!exists)
-                    {
-                        Debug.Log($"[RoomManager] 방장 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName={NetworkManager.Instance.ConnectedUserName}");
-                        _playerList.Add(new PlayerReadyData(myUserID, NetworkManager.Instance.ConnectedUserName, false));
-                        
-                        if (roomUI != null)
-                        {
-                            roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
-                        }
+                        NetworkManager.Instance.SendRoomListRequest();
+                        Debug.Log("[RoomManager] 방 목록 요청 전송 (방 이름 가져오기 위해)");
                     }
                 }
             }
+            
+            // 플레이어 수와 최대 인원 설정
+            _currentPlayerCount = _playerList.Count;
+            _maxPlayers = 5; // 기본 최대 인원
+            
+            // roomUI가 null이면 다시 찾기
+            if (roomUI == null)
+            {
+                roomUI = FindFirstObjectByType<RoomUI>();
+                if (roomUI != null)
+                {
+                    Debug.Log("[RoomManager] InitializeRoomInfo에서 roomUI를 찾았습니다.");
+                }
+            }
+            
+            // [핵심 수정] 방장이 방을 생성한 경우, 자신을 플레이어 목록에 추가
+            // ConnectedUserID가 설정될 때까지 대기 후 추가 시도
+            if (_isHost && NetworkManager.Instance != null)
+            {
+                StartCoroutine(AddHostToPlayerListDelayed());
+            }
+            
+            // UI 업데이트 (플레이어 목록 추가 후)
+            if (roomUI != null)
+            {
+                Debug.Log($"[RoomManager] InitializeRoomInfo - UI 업데이트: ID={pendingRoomID}, Name={_currentRoomName}, Players={_currentPlayerCount}/{_maxPlayers}");
+                roomUI.UpdateRoomInfo(pendingRoomID, _currentRoomName, _currentPlayerCount, _maxPlayers);
+                
+                // 플레이어 목록도 UI에 업데이트
+                if (_playerList.Count > 0)
+                {
+                    roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
+                }
+            }
+            else
+            {
+                Debug.LogError("[RoomManager] InitializeRoomInfo - roomUI가 null입니다! RoomScene에 RoomUI 컴포넌트가 있는지 확인하세요.");
+            }
+        }
+    }
+
+    /// <summary>
+    /// 방장 자신을 플레이어 목록에 추가하는 코루틴 (지연 실행)
+    /// ConnectedUserID가 설정될 때까지 대기
+    /// </summary>
+    private System.Collections.IEnumerator AddHostToPlayerListDelayed()
+    {
+        // ConnectedUserID와 ConnectedUserName이 설정될 때까지 대기 (최대 2초)
+        float timeout = 2f;
+        float elapsed = 0f;
+        while ((NetworkManager.Instance.ConnectedUserID == -1 || string.IsNullOrEmpty(NetworkManager.Instance.ConnectedUserName)) && elapsed < timeout)
+        {
+            yield return new WaitForSeconds(0.1f);
+            elapsed += 0.1f;
+        }
+        
+        if (NetworkManager.Instance == null) yield break;
+        
+        int myUserID = NetworkManager.Instance.ConnectedUserID;
+        string myUserName = NetworkManager.Instance.ConnectedUserName;
+        
+        if (myUserID != -1 && !string.IsNullOrEmpty(myUserName))
+        {
+            // 이미 추가되어 있는지 확인
+            bool exists = false;
+            foreach (var player in _playerList)
+            {
+                if (player.PlayerID == myUserID)
+                {
+                    exists = true;
+                    break;
+                }
+            }
+            
+            if (!exists)
+            {
+                Debug.Log($"[RoomManager] AddHostToPlayerListDelayed - 방장 자신을 플레이어 목록에 추가: UserID={myUserID}, UserName={myUserName}");
+                _playerList.Add(new PlayerReadyData(myUserID, myUserName, false));
+                _currentPlayerCount = _playerList.Count; // 플레이어 수 업데이트
+                
+                // UI 업데이트
+                if (roomUI != null)
+                {
+                    roomUI.UpdatePlayerList(_playerList, _isLocalPlayerReady);
+                }
+            }
+            else
+            {
+                Debug.Log($"[RoomManager] AddHostToPlayerListDelayed - 방장 자신이 이미 플레이어 목록에 있습니다. UserID={myUserID}");
+            }
+        }
+        else
+        {
+            Debug.LogWarning($"[RoomManager] AddHostToPlayerListDelayed - 방장 정보가 불완전합니다. UserID={myUserID}, UserName={myUserName}");
         }
     }
 
@@ -154,6 +227,19 @@ public class RoomManager : MonoBehaviour
     public void SetCurrentRoomID(int roomID)
     {
         _currentRoomID = roomID;
+        
+        // [핵심 수정] roomID가 -1이면 방을 나간 것으로 간주하고 초기화
+        if (roomID == -1)
+        {
+            Debug.Log("[RoomManager] 방 나가기 완료. 방 정보 초기화");
+            _currentRoomName = "";
+            _currentPlayerCount = 0;
+            _maxPlayers = 0;
+            _playerList.Clear();
+            _isLocalPlayerReady = false;
+            _isHost = false;
+            return;
+        }
         
         // 방장 여부 확인 (방을 생성한 사람이 방장)
         if (NetworkManager.Instance != null)
@@ -192,9 +278,24 @@ public class RoomManager : MonoBehaviour
 
         Debug.Log($"[RoomManager] 방 정보 업데이트: ID={roomID}, Name={roomName}, Players={playerCount}/{maxPlayers}");
 
+        // roomUI가 null이면 다시 찾기
+        if (roomUI == null)
+        {
+            roomUI = FindFirstObjectByType<RoomUI>();
+            if (roomUI != null)
+            {
+                Debug.Log("[RoomManager] UpdateRoomInfo에서 roomUI를 찾았습니다.");
+            }
+        }
+
         if (roomUI != null)
         {
+            Debug.Log($"[RoomManager] UpdateRoomInfo - UI 업데이트 호출: ID={roomID}, Name={roomName}, Players={playerCount}/{maxPlayers}");
             roomUI.UpdateRoomInfo(roomID, roomName, playerCount, maxPlayers);
+        }
+        else
+        {
+            Debug.LogError("[RoomManager] UpdateRoomInfo - roomUI가 null입니다! RoomScene에 RoomUI 컴포넌트가 있는지 확인하세요.");
         }
     }
 
